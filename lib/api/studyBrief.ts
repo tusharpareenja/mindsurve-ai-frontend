@@ -26,6 +26,7 @@ export type UploadDto = {
   size_bytes: number
   category?: string | null
   relative_path?: string | null
+  extracted_text?: string | null
 }
 
 export type ConfirmDto = {

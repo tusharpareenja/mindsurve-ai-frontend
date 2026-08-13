@@ -1,11 +1,13 @@
 "use client"
 
+import { useEffect, useState } from "react"
 import { Plus } from "lucide-react"
 import { AppShell, useCreateProjectModal } from "@/components/layout/AppShell"
 import { AuthGate } from "@/components/auth/AuthGate"
 import { Skeleton } from "@/components/feedback/Skeleton"
 import { useAuth } from "@/context/AuthContext"
 import { useProjects } from "@/context/ProjectsContext"
+import { DEFAULT_GREETING, getGreeting, type Greeting } from "@/lib/greeting"
 
 export default function WelcomePage() {
   return (
@@ -36,12 +38,18 @@ function WelcomeShell() {
 
 function WelcomeMain({ userName }: { userName: string }) {
   const openCreate = useCreateProjectModal()
+  const [greeting, setGreeting] = useState<Greeting>(DEFAULT_GREETING)
+
+  useEffect(() => {
+    setGreeting(getGreeting())
+  }, [])
 
   return (
     <main className="flex flex-1 flex-col items-center justify-center px-4 py-10">
       <div className="w-full max-w-2xl text-center animate-in fade-in-0 slide-in-from-bottom-4 duration-700">
         <h1 className="text-3xl font-semibold tracking-tight text-gray-900 sm:text-4xl md:text-5xl lg:text-6xl">
-          Hello <span className="text-blue-500">{userName}</span>
+          {greeting.pre} <span className="text-blue-500">{userName}</span>
+          {greeting.post}
         </h1>
         <p className="mx-auto mt-3 max-w-md text-sm text-gray-500 sm:text-base">
           Give us your idea. We handle the rest.

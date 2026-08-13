@@ -56,7 +56,10 @@ export function AppShell({
 
   const openSidebar = useCallback(() => setSidebarOpen(true), [])
   const closeSidebar = useCallback(() => setSidebarOpen(false), [])
-  const openCreate = useCallback(() => setCreateOpen(true), [])
+  const openCreate = useCallback(() => {
+    setSidebarOpen(false)
+    setCreateOpen(true)
+  }, [])
   const closeCreate = useCallback(() => setCreateOpen(false), [])
 
   const renameTarget = projects.find((p) => p.id === renameId)

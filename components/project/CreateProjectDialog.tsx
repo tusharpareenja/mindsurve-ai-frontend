@@ -7,6 +7,7 @@ import { useToast } from "@/components/feedback/Toaster"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { useChats } from "@/context/ChatsContext"
 import { useProjects } from "@/context/ProjectsContext"
 import { ApiError } from "@/lib/api/types"
 
@@ -20,6 +21,7 @@ export function CreateProjectDialog({ open, onClose }: CreateProjectDialogProps)
   const router = useRouter()
   const { toast } = useToast()
   const { createProject } = useProjects()
+  const { createChat } = useChats()
   const [title, setTitle] = useState("")
   const [submitting, setSubmitting] = useState(false)
 
@@ -44,6 +46,13 @@ export function CreateProjectDialog({ open, onClose }: CreateProjectDialogProps)
     setSubmitting(true)
     try {
       const newProject = await createProject(trimmed)
+      let destination = `/project/${newProject.id}`
+      try {
+        const chat = await createChat(newProject.id, "New Chat")
+        destination = `/project/${newProject.id}/chat/${chat.id}`
+      } catch {
+        // Project exists; land on the project hub if chat creation fails.
+      }
       toast({
         type: "success",
         title: "Project created",
@@ -51,7 +60,8 @@ export function CreateProjectDialog({ open, onClose }: CreateProjectDialogProps)
       })
       resetForm()
       onClose()
-      router.push(`/project/${newProject.id}`)
+      // Hard navigate from wherever the user currently is (welcome / other project / chat).
+      router.replace(destination)
     } catch (err) {
       toast({
         type: "error",

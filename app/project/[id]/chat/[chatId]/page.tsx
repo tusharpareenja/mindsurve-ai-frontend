@@ -14,6 +14,7 @@ import {
   X,
   FolderOpen,
   ImagePlus,
+  FileText,
   Check,
   AlertCircle,
 } from "lucide-react"
@@ -24,12 +25,21 @@ import { AppShell } from "@/components/layout/AppShell"
 import { AuthGate } from "@/components/auth/AuthGate"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/feedback/Skeleton"
+import { ThinkingStatus } from "@/components/feedback/ThinkingStatus"
 import { StudyBriefCard } from "@/components/studies/StudyBriefCard"
+import { StudyGenerationCard } from "@/components/studies/StudyGenerationCard"
+import { StudyReadyCard } from "@/components/studies/StudyReadyCard"
+import { CollectionChoiceCard, type CollectionMode } from "@/components/studies/CollectionChoiceCard"
+import { RegenerateWarningDialog } from "@/components/studies/RegenerateWarningDialog"
 import { useProjects } from "@/context/ProjectsContext"
 import { useChats } from "@/context/ChatsContext"
 import { useToast } from "@/components/feedback/Toaster"
+import { useTaskGeneration } from "@/hooks/use-task-generation"
+import { useSyntheticCollection } from "@/hooks/use-synthetic-collection"
 import { ApiError } from "@/lib/api/types"
+import type { SyntheticMode } from "@/types/synthetic-collection"
 import { mapAiTurn, studyBriefApi } from "@/lib/api/studyBrief"
+import { taskGenerationApi } from "@/lib/api/taskGeneration"
 import {
   displayNameForUpload,
   mapPool,
@@ -88,9 +98,32 @@ function ChatPageInner() {
   const [hasMoreMessages, setHasMoreMessages] = useState(false)
   const [nextBefore, setNextBefore] = useState<string | undefined>()
   const [loadingOlder, setLoadingOlder] = useState(false)
+  const [editRequestId, setEditRequestId] = useState(0)
+  const [regenOpen, setRegenOpen] = useState(false)
+  const [regenConfirming, setRegenConfirming] = useState(false)
+  const [pendingPatch, setPendingPatch] = useState<Partial<StudyBrief> | null>(
+    null
+  )
+  const [changedFields, setChangedFields] = useState<string[]>([])
+  const [regenMessage, setRegenMessage] = useState("")
+  const [collectionChoice, setCollectionChoice] = useState<CollectionMode | null>(
+    null
+  )
+  const [engineChoice, setEngineChoice] = useState<SyntheticMode | null>(null)
+  const [selectingCollection, setSelectingCollection] =
+    useState<CollectionMode | null>(null)
+  const [engineSelecting, setEngineSelecting] = useState<SyntheticMode | null>(
+    null
+  )
+  const autoStartRef = useRef(false)
+
+  useEffect(() => {
+    autoStartRef.current = false
+  }, [chatId])
 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const folderInputRef = useRef<HTMLInputElement>(null)
+  const docInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -100,6 +133,37 @@ function ChatPageInner() {
 
   const project = getProject(projectId)
   const chat = getChatsForProject(projectId).find((c) => c.id === chatId)
+
+  const generationEnabled =
+    phase === "created" || brief?.status === "created" || !!brief?.study_id
+
+  const {
+    run: generationRun,
+    steps: generationSteps,
+    loaded: generationLoaded,
+    starting: generationStarting,
+    launching,
+    error: generationError,
+    isActive: generationActive,
+    isReady: generationReady,
+    isLaunched: generationLaunched,
+    isFailed: generationFailed,
+    start: startGeneration,
+    retry: retryGeneration,
+    launch: launchStudy,
+    applyRun,
+    toastReadyRef,
+  } = useTaskGeneration(chatId, generationEnabled)
+
+  const {
+    run: syntheticRun,
+    stats: syntheticStats,
+    starting: syntheticStarting,
+    isActive: syntheticActive,
+    isFailed: syntheticFailed,
+    start: startSynthetic,
+    retry: retrySynthetic,
+  } = useSyntheticCollection(chatId, generationLaunched)
 
   const uploadingCount = uploads.filter((u) => u.status === "uploading").length
   const readyUploads = uploads.filter((u) => u.status === "ready" && u.url)
@@ -124,7 +188,8 @@ function ChatPageInner() {
 
   const showBriefCard =
     !!brief &&
-    (phase === "brief_ready" ||
+    ((brief.title.trim().length >= 3 && brief.study_type !== null) ||
+      phase === "brief_ready" ||
       phase === "created" ||
       brief.status === "ready" ||
       brief.status === "created")
@@ -309,57 +374,92 @@ function ChatPageInner() {
     folderInput.setAttribute("directory", "")
   }, [ready])
 
-  const chatLocked = phase === "created" || confirming
+  const uploadOne = useCallback(
+    async (item: UploadItem) => {
+      try {
+        if (item.file.size > 25 * 1024 * 1024) {
+          throw new Error("File exceeds 25 MB")
+        }
+        const uploaded = await studyBriefApi.upload(chatId, item.file, {
+          category: item.category,
+          relativePath: item.relativePath,
+        })
+        const extracted = uploaded.extracted_text ?? null
+        const looksLikeDocument =
+          /\.(pdf|docx|doc|txt|csv|md)$/i.test(item.file.name) ||
+          (uploaded.content_type || "").includes("pdf") ||
+          (uploaded.content_type || "").includes("word")
+        if (looksLikeDocument && !(extracted && extracted.trim())) {
+          toast({
+            type: "warning",
+            title: "Couldn't read document text",
+            description:
+              item.file.name.toLowerCase().endsWith(".doc") &&
+              !item.file.name.toLowerCase().endsWith(".docx")
+                ? "Legacy .doc files aren't supported. Please upload a .docx or PDF."
+                : `We uploaded ${item.file.name}, but couldn't extract its text. Try a .docx or text-based PDF.`,
+          })
+        }
+        setUploads((prev) =>
+          prev.map((u) =>
+            u.id === item.id
+              ? {
+                  ...u,
+                  status: "ready",
+                  url: uploaded.url,
+                  contentType: uploaded.content_type,
+                  category: uploaded.category ?? item.category,
+                  extractedText: extracted,
+                  error: undefined,
+                }
+              : u
+          )
+        )
+      } catch (err) {
+        setUploads((prev) =>
+          prev.map((u) =>
+            u.id === item.id
+              ? {
+                  ...u,
+                  status: "error",
+                  error:
+                    err instanceof ApiError
+                      ? err.message
+                      : err instanceof Error
+                        ? err.message
+                        : "Upload failed",
+                }
+              : u
+          )
+        )
+      }
+    },
+    [chatId, toast]
+  )
 
   const startUploads = useCallback(
     async (incoming: UploadItem[]) => {
       if (!incoming.length) return
       setUploads((prev) => [...prev, ...incoming].slice(0, MAX_ATTACHMENTS))
-
-      await mapPool(incoming, UPLOAD_CONCURRENCY, async (item) => {
-        try {
-          if (item.file.size > 25 * 1024 * 1024) {
-            throw new Error("File exceeds 25 MB")
-          }
-          const uploaded = await studyBriefApi.upload(chatId, item.file, {
-            category: item.category,
-            relativePath: item.relativePath,
-          })
-          setUploads((prev) =>
-            prev.map((u) =>
-              u.id === item.id
-                ? {
-                    ...u,
-                    status: "ready",
-                    url: uploaded.url,
-                    contentType: uploaded.content_type,
-                    category: uploaded.category ?? item.category,
-                  }
-                : u
-            )
-          )
-        } catch (err) {
-          setUploads((prev) =>
-            prev.map((u) =>
-              u.id === item.id
-                ? {
-                    ...u,
-                    status: "error",
-                    error:
-                      err instanceof ApiError
-                        ? err.message
-                        : err instanceof Error
-                          ? err.message
-                          : "Upload failed",
-                  }
-                : u
-            )
-          )
-        }
-      })
+      await mapPool(incoming, UPLOAD_CONCURRENCY, (item) => uploadOne(item))
     },
-    [chatId]
+    [uploadOne]
   )
+
+  const retryFailedUploads = useCallback(async () => {
+    const failed = uploads.filter((u) => u.status === "error")
+    if (!failed.length) return
+    setUploads((prev) =>
+      prev.map((u) =>
+        u.status === "error"
+          ? { ...u, status: "uploading", error: undefined }
+          : u
+      )
+    )
+    await mapPool(failed, UPLOAD_CONCURRENCY, (item) =>
+      uploadOne({ ...item, status: "uploading" })
+    )
+  }, [uploads, uploadOne])
 
   const handlePickFiles = (files: FileList | null) => {
     if (!files?.length) return
@@ -376,19 +476,19 @@ function ChatPageInner() {
     if (!parsed.items.length) {
       toast({
         type: "error",
-        title: "No images found",
+        title: "No supported files found",
         description:
-          parsed.skippedNonImages > 0
-            ? "The selection didn’t include any image files."
-            : "Choose image files or a folder that contains images.",
+          parsed.skippedUnsupported > 0
+            ? "Use images, a PDF, or a Word (.docx) file."
+            : "Choose image files, a folder of images, or a PDF / Word file.",
       })
       return
     }
-    if (parsed.skippedNonImages > 0) {
+    if (parsed.skippedUnsupported > 0) {
       toast({
         type: "info",
-        title: "Skipped non-images",
-        description: `${parsed.skippedNonImages} non-image file(s) were ignored.`,
+        title: "Some files skipped",
+        description: `${parsed.skippedUnsupported} unsupported file(s) were ignored.`,
       })
     }
 
@@ -432,9 +532,10 @@ function ChatPageInner() {
     const attachments: AttachmentBrief[] = readyUploads.map((u) => ({
       url: u.url!,
       filename: u.file.name,
-      content_type: u.contentType || u.file.type || "image/png",
+      content_type: u.contentType || u.file.type || "application/octet-stream",
       category: u.category ?? null,
       relative_path: u.relativePath ?? null,
+      extracted_text: u.extractedText ?? null,
     }))
 
     const tempId = `temp-${Date.now()}`
@@ -445,7 +546,7 @@ function ChatPageInner() {
       content:
         content ||
         (attachments.length
-          ? `Uploaded ${attachments.length} image(s)`
+          ? `Uploaded ${attachments.length} file(s)`
           : ""),
       createdAt: new Date(),
       metadata: attachments.length
@@ -504,6 +605,34 @@ function ChatPageInner() {
   }
 
   const handleSaveBrief = async (patch: Partial<StudyBrief>) => {
+    // After tasks exist (or generation ran), check whether regeneration is needed.
+    const shouldCheckRegen =
+      !!generationRun &&
+      !generationLaunched &&
+      generationRun.status !== "queued" &&
+      !generationActive
+
+    if (shouldCheckRegen) {
+      try {
+        const preview = await taskGenerationApi.previewChanges(chatId, patch)
+        if (preview.requires_regeneration) {
+          setPendingPatch(patch)
+          setChangedFields(preview.changed_fields)
+          setRegenMessage(preview.message)
+          setRegenOpen(true)
+          return
+        }
+      } catch (err) {
+        toast({
+          type: "error",
+          title: "Couldn't check changes",
+          description:
+            err instanceof ApiError ? err.message : "Please try again.",
+        })
+        throw err
+      }
+    }
+
     try {
       const out = await studyBriefApi.update(chatId, patch)
       setBrief(out.study_brief)
@@ -520,8 +649,40 @@ function ChatPageInner() {
     }
   }
 
+  const confirmRegenerate = async () => {
+    if (!pendingPatch) return
+    setRegenConfirming(true)
+    try {
+      const res = await taskGenerationApi.regenerate(chatId, {
+        ...pendingPatch,
+        confirm_regeneration: true,
+      })
+      applyRun(res.run)
+      const out = await studyBriefApi.get(chatId)
+      setBrief(out.study_brief)
+      setPhase(out.phase)
+      setRegenOpen(false)
+      setPendingPatch(null)
+      toast({
+        type: "info",
+        title: "Regenerating tasks",
+        description: "We’re rebuilding your study tasks from the updated brief.",
+      })
+    } catch (err) {
+      toast({
+        type: "error",
+        title: "Couldn't regenerate",
+        description:
+          err instanceof ApiError ? err.message : "Please try again.",
+      })
+    } finally {
+      setRegenConfirming(false)
+    }
+  }
+
   const handleContinue = async () => {
     setConfirming(true)
+    autoStartRef.current = true
     try {
       const out = await studyBriefApi.confirm(chatId)
       setBrief(out.study_brief)
@@ -533,10 +694,24 @@ function ChatPageInner() {
       toast({
         type: "success",
         title: "Study draft created",
-        description: "Task generation will be available next.",
+        description: "Starting task generation…",
       })
-      scrollToBottom()
+      try {
+        const gen = await startGeneration()
+        applyRun(gen.run)
+      } catch (err) {
+        toast({
+          type: "error",
+          title: "Couldn't start task generation",
+          description:
+            err instanceof ApiError
+              ? err.message
+              : "Your draft is safe — use Retry when you’re ready.",
+        })
+      }
+      if (stickToBottomRef.current) scrollToBottom()
     } catch (err) {
+      autoStartRef.current = false
       toast({
         type: "error",
         title: "Couldn't create study",
@@ -546,6 +721,166 @@ function ChatPageInner() {
     } finally {
       setConfirming(false)
     }
+  }
+
+  // Restore collection choice after launch (refresh / return to chat).
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(`mindsurve_collection_${chatId}`)
+      setCollectionChoice(raw === "ai" || raw === "cint" ? raw : null)
+      const engine = window.localStorage.getItem(
+        `mindsurve_collection_engine_${chatId}`
+      )
+      setEngineChoice(engine === "ai" || engine === "randomize" ? engine : null)
+    } catch {
+      setCollectionChoice(null)
+      setEngineChoice(null)
+    }
+  }, [chatId])
+
+  // If a synthetic run already exists, treat collection as AI + engine selected.
+  useEffect(() => {
+    if (!syntheticRun) return
+    setCollectionChoice("ai")
+    setEngineChoice(syntheticRun.mode)
+    try {
+      window.localStorage.setItem(`mindsurve_collection_${chatId}`, "ai")
+      window.localStorage.setItem(
+        `mindsurve_collection_engine_${chatId}`,
+        syntheticRun.mode
+      )
+    } catch {
+      /* ignore */
+    }
+  }, [chatId, syntheticRun])
+
+  // Auto-start generation only for a created draft that has no run yet.
+  useEffect(() => {
+    if (!generationEnabled || !generationLoaded) return
+    if (generationRun || generationStarting) return
+    if (autoStartRef.current) return
+    autoStartRef.current = true
+    void (async () => {
+      try {
+        await startGeneration()
+      } catch {
+        /* draft remains; user can retry from the card */
+      }
+    })()
+  }, [
+    generationEnabled,
+    generationLoaded,
+    generationRun,
+    generationStarting,
+    startGeneration,
+  ])
+
+  // Toast once when tasks become ready.
+  useEffect(() => {
+    if (!generationRun || generationRun.status !== "ready") return
+    if (toastReadyRef.current === generationRun.id) return
+    toastReadyRef.current = generationRun.id
+    toast({
+      type: "success",
+      title: "Tasks ready",
+      description: "Preview your study, then launch when you’re happy.",
+    })
+  }, [generationRun, toast, toastReadyRef])
+
+  // Lock only while confirming / generating tasks — collection can run while chatting.
+  const chatLocked = confirming || generationActive || generationStarting
+
+  const allowBriefEdit =
+    !!generationRun &&
+    !generationLaunched &&
+    !generationActive &&
+    (generationReady || generationFailed)
+
+  const editLockedMessage = generationLaunched
+    ? "This study is live. Task-affecting edits are locked, but you can still chat."
+    : generationActive
+      ? "Task generation is running. Wait for it to finish before editing."
+      : null
+
+  const composerHint = generationLaunched
+    ? "Study is collecting responses. You can keep chatting — study edits stay locked."
+    : generationActive || generationStarting
+      ? "Generating tasks — you can leave this page and come back anytime."
+      : generationReady
+        ? "Tasks are ready. You can still message us, or preview / launch above."
+        : generationFailed
+          ? "Task generation needs a retry. Your draft study is safe."
+          : confirming
+            ? "Creating your study draft…"
+            : null
+
+  const composerPlaceholder = generationLaunched
+    ? "Message MindSurve…"
+    : generationActive || generationStarting
+      ? "Generating tasks…"
+      : uploadsBusy
+        ? "Uploading files… send unlocks when ready"
+        : "Message MindSurve…"
+
+  const handleCollectionChoice = (mode: CollectionMode) => {
+    setSelectingCollection(mode)
+    try {
+      window.localStorage.setItem(`mindsurve_collection_${chatId}`, mode)
+    } catch {
+      /* ignore */
+    }
+    setCollectionChoice(mode)
+    setSelectingCollection(null)
+    if (mode === "cint") {
+      setEngineChoice(null)
+      toast({
+        type: "success",
+        title: "Cint request sent",
+        description:
+          "Our team will run Cint and let you know when it’s completed.",
+      })
+      return
+    }
+    toast({
+      type: "info",
+      title: "Choose rating mode",
+      description: "Pick AI ratings or randomized ratings to start collection.",
+    })
+  }
+
+  const handleEngineChoice = (mode: SyntheticMode) => {
+    setEngineSelecting(mode)
+    void (async () => {
+      try {
+        window.localStorage.setItem(
+          `mindsurve_collection_engine_${chatId}`,
+          mode
+        )
+      } catch {
+        /* ignore */
+      }
+      setEngineChoice(mode)
+      try {
+        await startSynthetic(mode)
+        toast({
+          type: "success",
+          title:
+            mode === "randomize"
+              ? "Randomized collection started"
+              : "AI collection started",
+          description: "Watch response statistics update as respondents finish.",
+        })
+      } catch (err) {
+        toast({
+          type: "error",
+          title: "Couldn't start collection",
+          description:
+            err instanceof ApiError ? err.message : "Please try again.",
+        })
+      } finally {
+        setEngineSelecting(null)
+      }
+    })()
   }
 
   if (projectsLoading || chatsLoading || !ready || !project || !chat) {
@@ -601,8 +936,9 @@ function ChatPageInner() {
                   What study should we create?
                 </h2>
                 <p className="mt-2 max-w-md text-sm text-gray-500">
-                  Describe your idea, or upload a folder of categories with
-                  images — we’ll build the brief with you.
+                  Describe your idea. Upload images for a visual (grid) study, or
+                  a PDF / Word file — if you don’t have images, we’ll build a
+                  text study with statements to rate.
                 </p>
               </div>
             ) : (
@@ -624,15 +960,10 @@ function ChatPageInner() {
                 ))}
 
                 {thinking && (
-                  <div className="flex items-center gap-3 text-sm text-gray-500">
-                    <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-blue-500">
-                      <Bot className="size-4 text-white" />
-                    </div>
-                    <span className="inline-flex items-center gap-2 rounded-2xl bg-gray-100 px-4 py-2">
-                      <Loader2 className="size-3.5 animate-spin" />
-                      MindSurve is thinking…
-                    </span>
-                  </div>
+                  <ThinkingStatus
+                    phase={phase}
+                    studyType={brief?.study_type ?? null}
+                  />
                 )}
 
                 {showBriefCard && brief && !thinking && (
@@ -641,11 +972,172 @@ function ChatPageInner() {
                       brief={brief}
                       phase={phase}
                       confirming={confirming}
+                      allowEdit={allowBriefEdit}
+                      editLockedMessage={editLockedMessage}
+                      editRequestId={editRequestId}
                       onContinue={() => void handleContinue()}
                       onSaveEdit={handleSaveBrief}
                     />
                   </AssistantBlock>
                 )}
+
+                {generationEnabled &&
+                  generationLoaded &&
+                  !generationRun &&
+                  generationError &&
+                  !generationStarting && (
+                    <AssistantBlock>
+                      <div className="w-full max-w-md rounded-2xl border border-amber-200 bg-amber-50/80 px-4 py-3">
+                        <p className="text-sm font-medium text-amber-950">
+                          Couldn’t start task generation
+                        </p>
+                        <p className="mt-1 text-xs text-amber-900">
+                          {generationError}
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            void startGeneration().catch((err) => {
+                              toast({
+                                type: "error",
+                                title: "Retry failed",
+                                description:
+                                  err instanceof ApiError
+                                    ? err.message
+                                    : "Please try again.",
+                              })
+                            })
+                          }}
+                          className="mt-2 inline-flex h-9 cursor-pointer items-center justify-center rounded-md bg-blue-600 px-3 text-sm font-medium text-white hover:bg-blue-700"
+                        >
+                          Retry generation
+                        </button>
+                      </div>
+                    </AssistantBlock>
+                  )}
+
+                {generationEnabled &&
+                  generationRun &&
+                  (generationActive || generationStarting || generationFailed) && (
+                    <AssistantBlock>
+                      <StudyGenerationCard
+                        run={generationRun}
+                        steps={generationSteps}
+                        retrying={generationStarting}
+                        onRetry={() => {
+                          void retryGeneration().catch((err) => {
+                            toast({
+                              type: "error",
+                              title: "Retry failed",
+                              description:
+                                err instanceof ApiError
+                                  ? err.message
+                                  : "Please try again.",
+                            })
+                          })
+                        }}
+                      />
+                    </AssistantBlock>
+                  )}
+
+                {generationRun &&
+                  (generationReady || generationLaunched) &&
+                  !generationActive && (
+                    <AssistantBlock>
+                      <StudyReadyCard
+                        run={generationRun}
+                        studyTitle={brief?.title}
+                        launching={launching}
+                        editDisabled={!allowBriefEdit}
+                        onPreview={() => {
+                          const url = generationRun.preview_url
+                          if (url) {
+                            window.open(url, "_blank", "noopener,noreferrer")
+                          } else {
+                            toast({
+                              type: "warning",
+                              title: "Preview unavailable",
+                              description: "Preview URL isn’t ready yet.",
+                            })
+                          }
+                        }}
+                        onEdit={
+                          allowBriefEdit
+                            ? () => setEditRequestId((n) => n + 1)
+                            : undefined
+                        }
+                        onLaunch={async () => {
+                          try {
+                            const res = await launchStudy()
+                            toast({
+                              type: "success",
+                              title: "Study launched",
+                              description:
+                                res.message ||
+                                "Share the participant link to collect responses.",
+                            })
+                          } catch (err) {
+                            toast({
+                              type: "error",
+                              title: "Couldn't launch study",
+                              description:
+                                err instanceof ApiError
+                                  ? err.message
+                                  : "Please try again.",
+                            })
+                          }
+                        }}
+                      />
+                    </AssistantBlock>
+                  )}
+
+                {generationLaunched && (
+                  <AssistantBlock>
+                    <CollectionChoiceCard
+                      studyTitle={brief?.title}
+                      choice={collectionChoice}
+                      engineChoice={engineChoice}
+                      selecting={selectingCollection}
+                      engineSelecting={engineSelecting}
+                      onChoose={handleCollectionChoice}
+                      onChooseEngine={handleEngineChoice}
+                      stats={
+                        engineChoice
+                          ? syntheticStats
+                          : null
+                      }
+                      progress={syntheticRun?.progress ?? null}
+                      statusMessage={syntheticRun?.message ?? null}
+                      collecting={syntheticActive || syntheticStarting}
+                      collectionFailed={syntheticFailed}
+                      retrying={syntheticStarting}
+                      onRetryCollection={() => {
+                        void retrySynthetic().catch((err) => {
+                          toast({
+                            type: "error",
+                            title: "Retry failed",
+                            description:
+                              err instanceof ApiError
+                                ? err.message
+                                : "Please try again.",
+                          })
+                        })
+                      }}
+                    />
+                  </AssistantBlock>
+                )}
+
+                <RegenerateWarningDialog
+                  open={regenOpen}
+                  changedFields={changedFields}
+                  message={regenMessage}
+                  confirming={regenConfirming}
+                  onCancel={() => {
+                    setRegenOpen(false)
+                    setPendingPatch(null)
+                  }}
+                  onConfirm={() => void confirmRegenerate()}
+                />
 
                 <div ref={bottomRef} />
               </div>
@@ -654,9 +1146,9 @@ function ChatPageInner() {
         </div>
 
         <div className="sticky bottom-0 z-10 shrink-0 bg-gradient-to-t from-blue-500/10 via-white/85 to-transparent px-3 pb-4 pt-2 sm:px-4">
-          {chatLocked && (
+          {composerHint && (
             <p className="mx-auto mb-2 max-w-3xl text-center text-xs text-gray-500">
-              Study draft is created. Task generation will unlock next.
+              {composerHint}
             </p>
           )}
 
@@ -670,52 +1162,82 @@ function ChatPageInner() {
               }`}
             >
               {uploads.length > 0 && (
-                <div className="flex flex-wrap gap-2 border-b border-gray-100 px-3 pt-3">
-                  {uploads.map((f) => (
-                    <div
-                      key={f.id}
-                      className="relative flex items-center gap-2 rounded-xl border border-blue-50 bg-blue-50/40 px-2 py-1.5 text-xs text-gray-600"
-                    >
-                      {f.previewUrl ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img
-                          src={f.previewUrl}
-                          alt=""
-                          className="size-9 rounded-md object-cover"
-                        />
-                      ) : (
-                        <Paperclip className="size-3.5 text-blue-500" />
-                      )}
-                      <div className="min-w-0">
-                        <p className="max-w-[140px] truncate font-medium text-gray-700">
-                          {displayNameForUpload(f)}
-                        </p>
-                        <p className="text-[10px] text-gray-500">
-                          {f.status === "uploading" && "Uploading…"}
-                          {f.status === "ready" && "Ready"}
-                          {f.status === "error" && (f.error || "Failed")}
-                        </p>
-                      </div>
-                      {f.status === "uploading" && (
-                        <Loader2 className="size-3.5 animate-spin text-blue-500" />
-                      )}
-                      {f.status === "ready" && (
-                        <Check className="size-3.5 text-emerald-600" />
-                      )}
-                      {f.status === "error" && (
-                        <AlertCircle className="size-3.5 text-red-500" />
+                <div className="border-b border-gray-100 px-2.5 pt-2.5 sm:px-3 sm:pt-3">
+                  <div className="mb-1.5 flex items-center justify-between gap-2">
+                    <span className="text-[11px] font-medium text-gray-500">
+                      {readyUploads.length}/{uploads.length} ready
+                      {hasUploadErrors ? " · some failed" : ""}
+                    </span>
+                    <div className="flex items-center gap-1">
+                      {hasUploadErrors && (
+                        <button
+                          type="button"
+                          onClick={() => void retryFailedUploads()}
+                          disabled={sending || thinking || uploadsBusy}
+                          className="cursor-pointer rounded px-1.5 py-0.5 text-[11px] font-medium text-blue-600 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          Retry failed
+                        </button>
                       )}
                       <button
                         type="button"
-                        onClick={() => removeUpload(f.id)}
+                        onClick={() => {
+                          for (const u of uploads) removeUpload(u.id)
+                        }}
                         disabled={sending || thinking}
-                        className="cursor-pointer rounded p-0.5 text-gray-400 hover:bg-white hover:text-gray-700 disabled:cursor-not-allowed"
-                        aria-label="Remove file"
+                        className="cursor-pointer rounded px-1.5 py-0.5 text-[11px] text-gray-400 hover:bg-gray-100 hover:text-gray-700 disabled:cursor-not-allowed"
                       >
-                        <X className="size-3.5" />
+                        Clear all
                       </button>
                     </div>
-                  ))}
+                  </div>
+                  <div className="flex max-h-28 flex-wrap gap-1.5 overflow-y-auto pb-2 sm:max-h-40 sm:gap-2">
+                    {uploads.map((f) => (
+                      <div
+                        key={f.id}
+                        className="relative flex min-w-0 max-w-full items-center gap-1.5 rounded-xl border border-blue-50 bg-blue-50/40 px-1.5 py-1 text-xs text-gray-600 sm:gap-2 sm:px-2 sm:py-1.5"
+                      >
+                        {f.previewUrl ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img
+                            src={f.previewUrl}
+                            alt=""
+                            className="size-8 shrink-0 rounded-md object-cover sm:size-9"
+                          />
+                        ) : (
+                          <Paperclip className="size-3.5 shrink-0 text-blue-500" />
+                        )}
+                        <div className="min-w-0">
+                          <p className="max-w-[96px] truncate font-medium text-gray-700 sm:max-w-[140px]">
+                            {displayNameForUpload(f)}
+                          </p>
+                          <p className="text-[10px] text-gray-500">
+                            {f.status === "uploading" && "Uploading…"}
+                            {f.status === "ready" && "Ready"}
+                            {f.status === "error" && (f.error || "Failed")}
+                          </p>
+                        </div>
+                        {f.status === "uploading" && (
+                          <Loader2 className="size-3.5 shrink-0 animate-spin text-blue-500" />
+                        )}
+                        {f.status === "ready" && (
+                          <Check className="size-3.5 shrink-0 text-emerald-600" />
+                        )}
+                        {f.status === "error" && (
+                          <AlertCircle className="size-3.5 shrink-0 text-red-500" />
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => removeUpload(f.id)}
+                          disabled={sending || thinking}
+                          className="shrink-0 cursor-pointer rounded p-0.5 text-gray-400 hover:bg-white hover:text-gray-700 disabled:cursor-not-allowed"
+                          aria-label="Remove file"
+                        >
+                          <X className="size-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
 
@@ -729,13 +1251,7 @@ function ChatPageInner() {
                     void handleSend()
                   }
                 }}
-                placeholder={
-                  chatLocked
-                    ? "Study created — task generation next…"
-                    : uploadsBusy
-                      ? "Uploading images… send unlocks when ready"
-                      : "Message MindSurve…"
-                }
+                placeholder={composerPlaceholder}
                 rows={1}
                 disabled={sending || thinking || chatLocked}
                 className="max-h-48 min-h-[56px] w-full resize-none overflow-y-auto border-0 bg-transparent px-4 pt-3.5 text-[15px] leading-6 text-gray-900 outline-none placeholder:text-gray-400 disabled:cursor-not-allowed"
@@ -749,6 +1265,17 @@ function ChatPageInner() {
                     multiple
                     className="hidden"
                     accept="image/*"
+                    onChange={(e) => {
+                      handlePickFiles(e.target.files)
+                      e.target.value = ""
+                    }}
+                  />
+                  <input
+                    ref={docInputRef}
+                    type="file"
+                    multiple
+                    className="hidden"
+                    accept=".pdf,.docx,.txt,.csv,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain"
                     onChange={(e) => {
                       handlePickFiles(e.target.files)
                       e.target.value = ""
@@ -774,7 +1301,7 @@ function ChatPageInner() {
                     <Plus className="size-5" />
                   </button>
                   {attachMenuOpen && (
-                    <div className="absolute bottom-11 left-0 z-20 w-48 overflow-hidden rounded-xl border border-gray-200 bg-white py-1 shadow-lg">
+                    <div className="absolute bottom-11 left-0 z-20 w-56 overflow-hidden rounded-xl border border-gray-200 bg-white py-1 shadow-lg">
                       <button
                         type="button"
                         className="flex w-full cursor-pointer items-center gap-2 px-3 py-2.5 text-left text-sm text-gray-700 hover:bg-gray-50"
@@ -782,6 +1309,14 @@ function ChatPageInner() {
                       >
                         <ImagePlus className="size-4 text-blue-500" />
                         Upload images
+                      </button>
+                      <button
+                        type="button"
+                        className="flex w-full cursor-pointer items-center gap-2 px-3 py-2.5 text-left text-sm text-gray-700 hover:bg-gray-50"
+                        onClick={() => docInputRef.current?.click()}
+                      >
+                        <FileText className="size-4 text-blue-500" />
+                        Upload PDF or Word
                       </button>
                       <button
                         type="button"

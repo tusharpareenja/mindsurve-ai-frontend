@@ -17,6 +17,11 @@ export function bindAuthTokenAccessor(accessor: TokenAccessor): void {
   tokenAccessor = accessor
 }
 
+/** Current in-memory access token (for WebSocket auth). Never log this. */
+export function getAccessToken(): string | null {
+  return tokenAccessor?.getAccessToken() ?? null
+}
+
 function joinUrl(path: string): string {
   const normalized = path.startsWith("/") ? path : `/${path}`
   return `${API_BASE_URL}${normalized}`

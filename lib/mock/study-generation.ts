@@ -3,6 +3,11 @@
  * TODO(api): replace with real study/job service + websockets.
  */
 
+import type { ResponseStats } from "@/types/synthetic-collection"
+
+export type { ResponseStats } from "@/types/synthetic-collection"
+export { formatAvgDuration } from "@/types/synthetic-collection"
+
 export type StudyGenPhase =
   | "idle"
   | "generating"
@@ -25,15 +30,6 @@ export type StudyGenStep = {
 }
 
 export type LaunchMode = "go_live" | "cint"
-
-export type ResponseStats = {
-  total: number
-  inProgress: number
-  completed: number
-  abandoned: number
-  completionRate: number
-  avgDurationSeconds: number
-}
 
 export type StudyGenerationJob = {
   chatId: string
@@ -170,12 +166,6 @@ export function updateStats(
   stats: ResponseStats
 ): StudyGenerationJob {
   return upsertJob({ ...job, stats })
-}
-
-export function formatAvgDuration(seconds: number): string {
-  const m = Math.floor(seconds / 60)
-  const s = Math.floor(seconds % 60)
-  return `${m}m ${s.toString().padStart(2, "0")}s`
 }
 
 /** Mock: conversation is ready for study after enough user turns / intent. */

@@ -16,13 +16,13 @@ import {
   Pencil,
   Trash2,
   ChevronRight,
-  Folder,
-  MessageSquare,
 } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
 import type { Project } from "@/types"
 import { BrandName } from "@/components/brand/BrandName"
 import { EmptyState } from "@/components/feedback/EmptyState"
+import { ChatBubbleIcon } from "@/components/icons/ChatBubbleIcon"
+import { ProjectFolderIcon } from "@/components/icons/ProjectFolderIcon"
 import { useChats } from "@/context/ChatsContext"
 import { useToast } from "@/components/feedback/Toaster"
 import { cn } from "@/lib/utils"
@@ -249,7 +249,7 @@ export function Sidebar({
 
             {projects.length === 0 ? (
               <EmptyState
-                icon={<Folder className="size-8" />}
+                icon={<ProjectFolderIcon className="size-8 text-gray-300" />}
                 title="No projects yet"
                 description="Create your first project to get started"
                 className="py-8"
@@ -296,10 +296,10 @@ export function Sidebar({
                               : "text-gray-800"
                           )}
                         >
-                          <Folder
+                          <ProjectFolderIcon
                             className={cn(
                               "size-4 shrink-0",
-                              isSelected ? "text-blue-500" : "text-gray-400"
+                              isSelected ? "text-blue-600" : "text-blue-500"
                             )}
                           />
                           <span className="truncate">{project.title}</span>
@@ -344,7 +344,14 @@ export function Sidebar({
                                         : "text-gray-600 hover:bg-gray-50 hover:text-gray-900"
                                     )}
                                   >
-                                    <MessageSquare className="size-3.5 shrink-0 opacity-60" />
+                                    <ChatBubbleIcon
+                                      className={cn(
+                                        "size-3.5 shrink-0",
+                                        chatSelected
+                                          ? "text-blue-500"
+                                          : "text-gray-400"
+                                      )}
+                                    />
                                     <span className="truncate">{chat.title}</span>
                                   </button>
                                 </li>

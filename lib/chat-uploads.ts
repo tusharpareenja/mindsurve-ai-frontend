@@ -1,6 +1,7 @@
 /** Helpers for chat file / folder uploads. */
 
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|svg)$/i
+const DOCUMENT_EXT = /\.(pdf|docx|txt|csv|md)$/i
 
 export type UploadItem = {
   id: string
@@ -11,18 +12,37 @@ export type UploadItem = {
   status: "uploading" | "ready" | "error"
   url?: string
   contentType?: string
+  extractedText?: string | null
   error?: string
 }
 
 export type ParsedSelection = {
   items: Omit<UploadItem, "status">[]
   emptyCategories: string[]
-  skippedNonImages: number
+  skippedUnsupported: number
 }
 
-function isImageFile(file: File): boolean {
+export function isImageFile(file: File): boolean {
   if (file.type.startsWith("image/")) return true
   return IMAGE_EXT.test(file.name)
+}
+
+export function isDocumentFile(file: File): boolean {
+  const type = (file.type || "").toLowerCase()
+  if (
+    type === "application/pdf" ||
+    type === "text/plain" ||
+    type === "text/csv" ||
+    type === "text/markdown" ||
+    type.includes("wordprocessingml")
+  ) {
+    return true
+  }
+  return DOCUMENT_EXT.test(file.name)
+}
+
+function isSupportedFile(file: File): boolean {
+  return isImageFile(file) || isDocumentFile(file)
 }
 
 function elementNameFromFile(filename: string): string {
@@ -36,16 +56,17 @@ function elementNameFromFile(filename: string): string {
  * - `Study/Aura/img.png` → category Aura, name from filename
  * - `Aura/img.png` → category Aura
  * - `img.png` (flat) → no category; AI/backend can organize
- * - Category folders that only contain non-images → emptyCategories
+ * - PDF / Word / text files are kept as documents (no category)
+ * - Category folders that only contain unsupported files → emptyCategories
  */
 export function parseUploadSelection(fileList: FileList | File[]): ParsedSelection {
   const files = Array.from(fileList as ArrayLike<File>)
   const emptyCategories: string[] = []
-  let skippedNonImages = 0
+  let skippedUnsupported = 0
 
-  type Bucket = { images: File[]; nonImages: number; paths: string[] }
+  type Bucket = { images: File[]; unsupported: number }
   const categoryBuckets = new Map<string, Bucket>()
-  const flatImages: File[] = []
+  const flatFiles: File[] = []
 
   for (const file of files) {
     const relative =
@@ -53,25 +74,27 @@ export function parseUploadSelection(fileList: FileList | File[]): ParsedSelecti
       file.name
     const parts = relative.split("/").filter(Boolean)
 
-    if (parts.length >= 2) {
+    if (parts.length >= 2 && isImageFile(file)) {
       const category = parts[parts.length - 2]
       const bucket = categoryBuckets.get(category) ?? {
         images: [],
-        nonImages: 0,
-        paths: [],
+        unsupported: 0,
       }
-      if (isImageFile(file)) {
-        bucket.images.push(file)
-        bucket.paths.push(relative)
-      } else {
-        bucket.nonImages += 1
-        skippedNonImages += 1
-      }
+      bucket.images.push(file)
       categoryBuckets.set(category, bucket)
-    } else if (isImageFile(file)) {
-      flatImages.push(file)
+    } else if (isSupportedFile(file)) {
+      flatFiles.push(file)
+    } else if (parts.length >= 2) {
+      const category = parts[parts.length - 2]
+      const bucket = categoryBuckets.get(category) ?? {
+        images: [],
+        unsupported: 0,
+      }
+      bucket.unsupported += 1
+      categoryBuckets.set(category, bucket)
+      skippedUnsupported += 1
     } else {
-      skippedNonImages += 1
+      skippedUnsupported += 1
     }
   }
 
@@ -98,16 +121,16 @@ export function parseUploadSelection(fileList: FileList | File[]): ParsedSelecti
     }
   }
 
-  for (const file of flatImages) {
+  for (const file of flatFiles) {
     items.push({
       id: `${file.name}-${file.size}-${file.lastModified}`,
       file,
-      previewUrl: URL.createObjectURL(file),
+      previewUrl: isImageFile(file) ? URL.createObjectURL(file) : undefined,
       relativePath: file.name,
     })
   }
 
-  return { items, emptyCategories, skippedNonImages }
+  return { items, emptyCategories, skippedUnsupported }
 }
 
 export function displayNameForUpload(item: Pick<UploadItem, "file" | "category">): string {
