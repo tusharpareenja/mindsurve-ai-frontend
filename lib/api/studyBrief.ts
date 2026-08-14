@@ -1,11 +1,14 @@
 "use client"
 
-import { api } from "@/lib/api/client"
+import { api, getAccessToken } from "@/lib/api/client"
+import { API_BASE_URL } from "@/lib/api/config"
 import { mapMessage, type MessageDto } from "@/lib/api/chats"
 import type { ChatMessage } from "@/types"
 import type {
   AttachmentBrief,
   BriefPhase,
+  BriefVersionList,
+  BriefVersionMeta,
   StudyBrief,
   StudyBriefOut,
 } from "@/types/study-brief"
@@ -17,6 +20,8 @@ export type AiTurnDto = {
   study_brief: StudyBrief
   suggested_chat_title?: string | null
   continued?: boolean
+  version?: BriefVersionMeta | null
+  changed_fields?: string[]
 }
 
 export type UploadDto = {
@@ -43,6 +48,66 @@ export const studyBriefApi = {
   update(chatId: string, patch: Partial<StudyBrief>) {
     return api.patch<StudyBriefOut>(`/chats/${chatId}/study-brief`, patch)
   },
+  async streamThoughts(
+    chatId: string,
+    content: string,
+    attachments: AttachmentBrief[] = [],
+    onText: (full: string) => void,
+    signal?: AbortSignal
+  ) {
+    const headers: Record<string, string> = {
+      Accept: "text/event-stream",
+      "Content-Type": "application/json",
+    }
+    const token = getAccessToken()
+    if (token) headers.Authorization = `Bearer ${token}`
+
+    const response = await fetch(
+      `${API_BASE_URL}/chats/${chatId}/ai-think-stream`,
+      {
+        method: "POST",
+        credentials: "include",
+        headers,
+        signal,
+        body: JSON.stringify({
+          content,
+          attachments,
+          attachment_urls: attachments.map((a) => a.url),
+        }),
+      }
+    )
+    if (!response.ok || !response.body) return
+
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ""
+    let full = ""
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const parts = buffer.split("\n\n")
+      buffer = parts.pop() ?? ""
+      for (const part of parts) {
+        const line = part
+          .split("\n")
+          .find((row) => row.startsWith("data:"))
+        if (!line) continue
+        try {
+          const payload = JSON.parse(line.slice(5).trim()) as {
+            text?: string
+            done?: boolean
+          }
+          if (payload.text) {
+            full += payload.text
+            onText(full)
+          }
+        } catch {
+          /* ignore a partial SSE frame */
+        }
+      }
+    }
+  },
   aiTurn(
     chatId: string,
     content: string,
@@ -61,6 +126,14 @@ export const studyBriefApi = {
   },
   confirm(chatId: string) {
     return api.post<ConfirmDto>(`/chats/${chatId}/study-brief/confirm`)
+  },
+  versions(chatId: string) {
+    return api.get<BriefVersionList>(`/chats/${chatId}/study-brief/versions`)
+  },
+  restoreVersion(chatId: string, version: number) {
+    return api.post<StudyBriefOut>(
+      `/chats/${chatId}/study-brief/versions/${version}/restore`
+    )
   },
   upload(
     chatId: string,

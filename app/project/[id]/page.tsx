@@ -9,9 +9,11 @@ import { AuthGate } from "@/components/auth/AuthGate"
 import { RenameProjectDialog } from "@/components/project/RenameProjectDialog"
 import { Skeleton } from "@/components/feedback/Skeleton"
 import { Input } from "@/components/ui/input"
+import { SpeechToTextButton } from "@/components/chat/SpeechToTextButton"
 import { useProjects } from "@/context/ProjectsContext"
 import { useChats } from "@/context/ChatsContext"
 import { useToast } from "@/components/feedback/Toaster"
+import { useSpeechToText } from "@/hooks/use-speech-to-text"
 import { formatRelativeDate } from "@/lib/formatters"
 import { ApiError } from "@/lib/api/types"
 
@@ -34,6 +36,16 @@ function ProjectWorkspace() {
   const [draft, setDraft] = useState("")
   const [renameOpen, setRenameOpen] = useState(false)
   const [sending, setSending] = useState(false)
+  const speech = useSpeechToText({
+    onTranscript: setDraft,
+    onError: (_error, message) => {
+      toast({
+        type: "error",
+        title: "Couldn't use microphone",
+        description: message,
+      })
+    },
+  })
 
   const project = getProject(projectId)
   const chats = getChatsForProject(projectId)
@@ -60,6 +72,7 @@ function ProjectWorkspace() {
     e.preventDefault()
     const content = draft.trim()
     if (!content || sending) return
+    speech.stop()
     setSending(true)
     try {
       const { chat } = await startChatWithMessage(projectId, content)
@@ -131,7 +144,7 @@ function ProjectWorkspace() {
             onSubmit={(e) => void handleStartChat(e)}
             className="mb-8"
           >
-            <div className="flex items-center gap-2 rounded-2xl border border-blue-100/80 bg-white/70 p-2 shadow-sm backdrop-blur-md">
+            <div className="flex items-center gap-1 rounded-2xl border border-blue-100/80 bg-white/70 p-2 shadow-sm backdrop-blur-md">
               <button
                 type="button"
                 onClick={() => void handleEmptyNewChat()}
@@ -143,10 +156,24 @@ function ProjectWorkspace() {
               <Input
                 type="text"
                 value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                placeholder={`New chat in ${project.title}`}
+                onChange={(e) => {
+                  if (speech.listening) speech.stop()
+                  setDraft(e.target.value)
+                }}
+                placeholder={
+                  speech.listening
+                    ? "Listening…"
+                    : `New chat in ${project.title}`
+                }
                 className="flex-1 border-0 bg-transparent text-gray-900 placeholder:text-gray-400 focus-visible:ring-0"
                 disabled={sending}
+              />
+              <SpeechToTextButton
+                listening={speech.listening}
+                supported={speech.supported}
+                disabled={sending}
+                onToggle={() => speech.toggle(draft)}
+                className="size-9"
               />
               <button
                 type="submit"

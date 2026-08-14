@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import {
   Check,
   ChevronDown,
@@ -30,80 +30,85 @@ export function StudyGenerationCard({
   onRetry,
   retrying = false,
 }: StudyGenerationCardProps) {
-  const [expanded, setExpanded] = useState(true)
-  const pct = Math.round(Math.min(100, Math.max(0, run.progress)))
   const failed = run.status === "failed" || run.status === "cancelled"
+  const [expanded, setExpanded] = useState(failed)
+  const pct = Math.round(Math.min(100, Math.max(0, run.progress)))
   const active = steps.find((s) => s.status === "active")
 
+  useEffect(() => {
+    if (failed) setExpanded(true)
+  }, [failed])
+
+  const statusLabel = run.message || active?.label || "Working…"
+
   return (
-    <div className="w-full max-w-md overflow-hidden rounded-2xl border border-blue-100 bg-white shadow-sm">
-      <div className="flex items-start justify-between gap-3 border-b border-blue-50 bg-gradient-to-r from-blue-50/80 to-white px-4 py-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="flex size-7 items-center justify-center rounded-full bg-blue-500 text-white">
-              {failed ? (
-                <RefreshCw className="size-3.5" />
-              ) : (
-                <Sparkles className="size-3.5" />
-              )}
-            </span>
-            <h3 className="text-sm font-semibold text-gray-900">
-              {failed ? "Task generation needs attention" : "Generating study tasks"}
-            </h3>
-          </div>
-          <p className="mt-1 text-xs leading-relaxed text-gray-500">
-            {run.message ||
-              (failed
-                ? "Something went wrong while building your tasks."
-                : "MindSurve is preparing your research matrix…")}
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={() => setExpanded((v) => !v)}
-          className="inline-flex cursor-pointer rounded-lg p-1.5 text-gray-500 hover:bg-blue-50"
-          aria-label={expanded ? "Collapse progress" : "Expand progress"}
-        >
-          {expanded ? (
-            <ChevronUp className="size-4" />
-          ) : (
-            <ChevronDown className="size-4" />
+    <div className="w-full overflow-hidden rounded-xl border border-gray-200/90 bg-white shadow-sm">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-left hover:bg-gray-50/80"
+        aria-expanded={expanded}
+      >
+        <span
+          className={cn(
+            "size-1.5 shrink-0 rounded-full",
+            failed ? "bg-amber-500" : "animate-pulse bg-blue-500"
           )}
-        </button>
-      </div>
-
-      <div className="px-4 py-3">
-        <div className="mb-1.5 flex items-center justify-between gap-2">
-          <span className="text-xs font-medium text-gray-600">
-            {failed ? "Stopped" : active?.label || "Working…"}
-          </span>
-          <span className="text-xs font-semibold tabular-nums text-blue-600">
-            {pct}%
-          </span>
-        </div>
-        <div
-          className="h-2 overflow-hidden rounded-full bg-blue-50"
-          role="progressbar"
-          aria-valuenow={pct}
-          aria-valuemin={0}
-          aria-valuemax={100}
-        >
-          <div
-            className={cn(
-              "h-full rounded-full transition-[width] duration-500 ease-out",
-              failed ? "bg-amber-500" : "bg-blue-500"
-            )}
-            style={{ width: `${pct}%` }}
-          />
-        </div>
-
-        {run.research_tip && !failed && (
-          <p className="mt-2.5 text-[11px] leading-relaxed text-gray-500">
-            {run.research_tip}
-          </p>
+          aria-hidden
+        />
+        {failed ? (
+          <RefreshCw className="size-3.5 shrink-0 text-amber-500" />
+        ) : (
+          <Sparkles className="size-3.5 shrink-0 text-blue-500" />
         )}
+        <span className="shrink-0 text-[13px] font-medium text-gray-900">
+          {failed ? "Task generation stopped" : "Generating study tasks"}
+        </span>
+        <span className="min-w-0 truncate text-xs text-gray-400">
+          · {failed ? run.error || "Needs a retry" : statusLabel}
+        </span>
+        <span className="ml-auto shrink-0 text-xs font-semibold tabular-nums text-blue-600">
+          {pct}%
+        </span>
+        {expanded ? (
+          <ChevronUp className="size-4 shrink-0 text-gray-400" />
+        ) : (
+          <ChevronDown className="size-4 shrink-0 text-gray-400" />
+        )}
+      </button>
 
-        {expanded && (
+      {expanded && (
+        <div className="border-t border-gray-100 px-3 py-3">
+          <div className="mb-1.5 flex items-center justify-between gap-2">
+            <span className="text-xs font-medium text-gray-600">
+              {failed ? "Stopped" : active?.label || "Working…"}
+            </span>
+            <span className="text-xs font-semibold tabular-nums text-blue-600">
+              {pct}%
+            </span>
+          </div>
+          <div
+            className="h-1.5 overflow-hidden rounded-full bg-gray-100"
+            role="progressbar"
+            aria-valuenow={pct}
+            aria-valuemin={0}
+            aria-valuemax={100}
+          >
+            <div
+              className={cn(
+                "h-full rounded-full transition-[width] duration-500 ease-out",
+                failed ? "bg-amber-500" : "bg-blue-500"
+              )}
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+
+          {run.research_tip && !failed && (
+            <p className="mt-2.5 text-[11px] leading-relaxed text-gray-500">
+              {run.research_tip}
+            </p>
+          )}
+
           <ol className="relative mt-3 space-y-0">
             {steps.map((step, index) => {
               const isLast = index === steps.length - 1
@@ -153,44 +158,42 @@ export function StudyGenerationCard({
               )
             })}
           </ol>
-        )}
 
-        {failed && (
-          <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50/80 px-3 py-2.5">
-            <p className="text-xs text-amber-900">
-              {run.error ||
-                "We couldn’t finish generating tasks. Your draft study is safe — you can retry."}
+          {failed && (
+            <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50/80 px-3 py-2.5">
+              <p className="text-xs text-amber-900">
+                {run.error ||
+                  "We couldn’t finish generating tasks. Your draft study is safe — you can retry."}
+              </p>
+              {run.retryable && onRetry && (
+                <Button
+                  type="button"
+                  onClick={onRetry}
+                  disabled={retrying}
+                  className="mt-2 h-9 w-full cursor-pointer bg-blue-600 text-sm text-white hover:bg-blue-700 disabled:cursor-not-allowed"
+                >
+                  {retrying ? (
+                    <>
+                      <Loader2 className="size-4 animate-spin" />
+                      Retrying…
+                    </>
+                  ) : (
+                    <>
+                      <RefreshCw className="size-4" />
+                      Retry generation
+                    </>
+                  )}
+                </Button>
+              )}
+            </div>
+          )}
+
+          {!failed && (
+            <p className="mt-3 flex items-center gap-1.5 text-[11px] text-gray-400">
+              <Clock className="size-3 shrink-0" />
+              Running in the background — keep chatting or leave this page.
             </p>
-            {run.retryable && onRetry && (
-              <Button
-                type="button"
-                onClick={onRetry}
-                disabled={retrying}
-                className="mt-2 h-9 w-full cursor-pointer bg-blue-600 text-sm text-white hover:bg-blue-700 disabled:cursor-not-allowed"
-              >
-                {retrying ? (
-                  <>
-                    <Loader2 className="size-4 animate-spin" />
-                    Retrying…
-                  </>
-                ) : (
-                  <>
-                    <RefreshCw className="size-4" />
-                    Retry generation
-                  </>
-                )}
-              </Button>
-            )}
-          </div>
-        )}
-      </div>
-
-      {!failed && (
-        <div className="flex items-center gap-2 border-t border-gray-100 bg-gray-50/80 px-4 py-2.5">
-          <Clock className="size-3.5 shrink-0 text-gray-400" />
-          <p className="text-xs text-gray-500">
-            You can leave this page — we’ll keep working and resume when you return.
-          </p>
+          )}
         </div>
       )}
     </div>

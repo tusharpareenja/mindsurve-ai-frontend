@@ -81,7 +81,32 @@ export type StudyBrief = {
   missing_fields: string[]
 }
 
+export type BriefVersionMeta = {
+  version: number
+  total: number
+  summary?: string
+  source?: string
+  changed_fields?: string[]
+  created_at?: string | null
+}
+
+export type BriefVersion = {
+  version: number
+  summary: string
+  source: string
+  changed_fields: string[]
+  created_at: string
+  study_brief: StudyBrief
+}
+
+export type BriefVersionList = {
+  current_version: number
+  total: number
+  versions: BriefVersion[]
+}
+
 export type StudyBriefOut = {
   phase: BriefPhase
   study_brief: StudyBrief
+  version?: BriefVersionMeta | null
 }

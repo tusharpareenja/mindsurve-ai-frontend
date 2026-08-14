@@ -3,9 +3,8 @@
 import { useEffect, useState } from "react"
 import {
   CheckCircle2,
-  ChevronDown,
-  ChevronUp,
   Loader2,
+  PanelRightOpen,
   Pencil,
   Plus,
   Trash2,
@@ -16,6 +15,8 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
+import { VersionHistoryBar } from "@/components/studies/VersionHistoryBar"
+import { cn } from "@/lib/utils"
 import {
   AGE_SEGMENTS,
   MAX_STATEMENT_CHARS,
@@ -24,6 +25,7 @@ import {
   MIN_TEXT_CATEGORIES,
   MIN_TEXT_STATEMENTS,
   type BriefPhase,
+  type BriefVersion,
   type StudyBrief,
 } from "@/types/study-brief"
 
@@ -37,8 +39,24 @@ type StudyBriefCardProps = {
   editLockedMessage?: string | null
   /** Bump to open the editor (e.g. from Ready card). */
   editRequestId?: number
+  /** compact = chat artifact chip; panel = split-view canvas. */
+  layout?: "compact" | "panel"
+  panelOpen?: boolean
+  onOpenPanel?: () => void
+  onClosePanel?: () => void
+  /** Compact chip: open the panel in edit mode. */
+  onRequestEdit?: () => void
   onContinue: () => void
   onSaveEdit: (patch: Partial<StudyBrief>) => Promise<void>
+  displayBrief?: StudyBrief | null
+  versionCurrent?: number
+  versionTotal?: number
+  viewingVersion?: number
+  versionSummary?: string
+  versions?: BriefVersion[]
+  onViewVersion?: (version: number) => void
+  onRestoreVersion?: () => void
+  restoringVersion?: boolean
 }
 
 export function StudyBriefCard({
@@ -48,11 +66,28 @@ export function StudyBriefCard({
   allowEdit = false,
   editLockedMessage = null,
   editRequestId = 0,
+  layout = "compact",
+  panelOpen = false,
+  onOpenPanel,
+  onClosePanel,
+  onRequestEdit,
   onContinue,
   onSaveEdit,
+  displayBrief,
+  versionCurrent = 0,
+  versionTotal = 0,
+  viewingVersion = 0,
+  versionSummary,
+  versions = [],
+  onViewVersion,
+  onRestoreVersion,
+  restoringVersion = false,
 }: StudyBriefCardProps) {
+  const isPanel = layout === "panel"
+  const shown = displayBrief ?? brief
+  const viewingHistory =
+    versionTotal > 1 && viewingVersion > 0 && viewingVersion !== versionCurrent
   const [editing, setEditing] = useState(false)
-  const [expanded, setExpanded] = useState(false)
   const [saving, setSaving] = useState(false)
   const [title, setTitle] = useState(brief.title)
   const [background, setBackground] = useState(brief.background)
@@ -92,8 +127,9 @@ export function StudyBriefCard({
   )
 
   const created = phase === "created" || brief.status === "created"
-  const canContinue = phase === "brief_ready" && !created
-  const canEdit = (!created || allowEdit) && !editLockedMessage
+  const canContinue = phase === "brief_ready" && !created && !viewingHistory
+  const canEdit =
+    (!created || allowEdit) && !editLockedMessage && !viewingHistory
   const missingImages =
     brief.study_type === "grid" &&
     (editing ? categories : brief.categories).some((c) =>
@@ -193,7 +229,7 @@ export function StudyBriefCard({
       }))
     )
     setEditing(true)
-    setExpanded(true)
+    onOpenPanel?.()
   }
 
   // External "Edit study" from ready card.
@@ -265,28 +301,61 @@ export function StudyBriefCard({
   }
 
   return (
-    <div className="w-full max-w-lg overflow-hidden rounded-2xl border border-blue-100/80 bg-white/95 shadow-sm">
-      <div className="flex items-start justify-between gap-2 px-3 py-3 sm:px-3.5">
+    <div
+      className={cn(
+        "overflow-hidden bg-white",
+        isPanel
+          ? "flex h-full min-h-0 flex-col border-0 shadow-none"
+          : "w-full max-w-lg rounded-2xl border border-blue-100/80 bg-white/95 shadow-sm"
+      )}
+    >
+      <div
+        className={cn(
+          "flex items-start justify-between gap-2",
+          isPanel
+            ? "shrink-0 border-b border-gray-100 px-4 py-3"
+            : "px-3 py-3 sm:px-3.5"
+        )}
+      >
         <div className="min-w-0">
           <p className="text-[11px] font-medium uppercase tracking-wide text-blue-600">
             Study brief
           </p>
           <h3 className="truncate text-sm font-semibold text-gray-900">
-            {brief.title || "Untitled study"}
+            {shown.title || "Untitled study"}
           </h3>
           <p className="mt-0.5 text-[11px] text-gray-500">
-            {brief.study_type === "grid"
+            {shown.study_type === "grid"
               ? "Grid"
-              : brief.study_type === "text"
+              : shown.study_type === "text"
                 ? "Text"
                 : "Pending"}{" "}
-            · {brief.categories.length} cats · {elementCount}{" "}
-            {brief.study_type === "text" ? "statements" : "elements"}
-            {brief.classification_questions.length > 0
-              ? ` · ${brief.classification_questions.length} Qs`
+            · {shown.categories.length} cats ·{" "}
+            {shown.categories.reduce((n, c) => n + c.elements.length, 0)}{" "}
+            {shown.study_type === "text" ? "statements" : "elements"}
+            {shown.classification_questions.length > 0
+              ? ` · ${shown.classification_questions.length} Qs`
               : ""}
-            {respondentCount ? ` · ${respondentCount} people` : ""}
+            {shown.audience?.number_of_respondents
+              ? ` · ${shown.audience.number_of_respondents} people`
+              : ""}
           </p>
+          {versionTotal > 0 && onViewVersion && (
+            <VersionHistoryBar
+              className="mt-1.5"
+              current={versionCurrent}
+              total={versionTotal}
+              viewing={viewingVersion || versionCurrent}
+              summary={versionSummary}
+              versions={versions}
+              disabled={editing}
+              onView={onViewVersion}
+              onRestore={
+                viewingHistory && !editLockedMessage ? onRestoreVersion : undefined
+              }
+              restoring={restoringVersion}
+            />
+          )}
         </div>
         <div className="flex shrink-0 items-center gap-1">
           {created && !allowEdit ? (
@@ -297,7 +366,13 @@ export function StudyBriefCard({
           ) : canEdit ? (
             <button
               type="button"
-              onClick={startEdit}
+              onClick={() => {
+                if (!isPanel && onRequestEdit) {
+                  onRequestEdit()
+                  return
+                }
+                startEdit()
+              }}
               className="inline-flex cursor-pointer items-center gap-1 rounded-lg px-2 py-1.5 text-[11px] font-medium text-gray-600 hover:bg-gray-100"
             >
               <Pencil className="size-3" />
@@ -308,23 +383,30 @@ export function StudyBriefCard({
               Locked
             </span>
           ) : null}
-          <button
-            type="button"
-            onClick={() => setExpanded((v) => !v)}
-            className="inline-flex cursor-pointer rounded-lg p-1.5 text-gray-500 hover:bg-gray-100"
-            aria-label={expanded ? "Collapse brief" : "Expand brief"}
-          >
-            {expanded ? (
-              <ChevronUp className="size-4" />
-            ) : (
-              <ChevronDown className="size-4" />
-            )}
-          </button>
+          {isPanel ? (
+            <button
+              type="button"
+              onClick={onClosePanel}
+              className="inline-flex cursor-pointer rounded-lg p-1.5 text-gray-500 hover:bg-gray-100"
+              aria-label="Close study panel"
+            >
+              <X className="size-4" />
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={onOpenPanel}
+              className="inline-flex cursor-pointer items-center gap-1 rounded-lg px-2 py-1.5 text-[11px] font-medium text-blue-600 hover:bg-blue-50"
+            >
+              <PanelRightOpen className="size-3.5" />
+              {panelOpen ? "Viewing" : "Open"}
+            </button>
+          )}
         </div>
       </div>
 
-      {expanded && (
-        <div className="space-y-2.5 border-t border-gray-100 px-3.5 py-3 text-sm text-gray-700">
+      {isPanel && (
+        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4 text-sm text-gray-700">
           {editing ? (
             <div className="space-y-2.5">
               <div className="space-y-1">
@@ -916,25 +998,25 @@ export function StudyBriefCard({
           ) : (
             <>
               <p className="line-clamp-3 text-xs leading-5 text-gray-600">
-                {brief.background || "No description yet."}
+                {shown.background || "No description yet."}
               </p>
               <div className="rounded-lg bg-gray-50 px-2.5 py-2">
                 <p className="text-[11px] font-medium text-gray-500">Main question</p>
-                <p className="mt-0.5 text-xs">{brief.main_question || "—"}</p>
+                <p className="mt-0.5 text-xs">{shown.main_question || "—"}</p>
               </div>
               <div className="space-y-1.5">
                 <p className="text-[11px] font-medium text-gray-500">
-                  {brief.study_type === "text"
+                  {shown.study_type === "text"
                     ? "Categories & statements"
                     : "Categories & elements"}
                 </p>
-                {brief.categories.map((cat) => (
+                {shown.categories.map((cat) => (
                   <div
                     key={cat.name}
                     className="rounded-lg border border-gray-100 px-2.5 py-2"
                   >
                     <p className="text-xs font-semibold text-gray-800">{cat.name}</p>
-                    {brief.study_type === "text" ? (
+                    {shown.study_type === "text" ? (
                       <ul className="mt-1.5 space-y-1">
                         {cat.elements.map((el, idx) => (
                           <li
@@ -972,11 +1054,11 @@ export function StudyBriefCard({
               </div>
               <div>
                 <p className="mb-1 text-[11px] font-medium text-gray-500">
-                  Classification questions
+                  Screening questions
                 </p>
-                {brief.classification_questions.length > 0 ? (
+                {shown.classification_questions.length > 0 ? (
                   <ul className="space-y-1 text-[11px] text-gray-600">
-                    {brief.classification_questions.map((q) => (
+                    {shown.classification_questions.map((q) => (
                       <li
                         key={q.question_text}
                         className="rounded-md bg-gray-50 px-2 py-1.5"
@@ -999,31 +1081,31 @@ export function StudyBriefCard({
                   <Users className="size-3" />
                   Audience
                 </p>
-                {respondentCount ||
-                briefAgeSegments.length > 0 ||
-                briefCountries.length > 0 ? (
+                {shown.audience?.number_of_respondents ||
+                (shown.audience?.age_segments ?? []).length > 0 ||
+                (shown.audience?.countries ?? []).length > 0 ? (
                   <div className="space-y-1.5 rounded-lg bg-gray-50 px-2.5 py-2 text-[11px] text-gray-700">
                     <p>
                       <span className="font-medium text-gray-800">
-                        {respondentCount ?? "—"}
+                        {shown.audience?.number_of_respondents ?? "—"}
                       </span>{" "}
                       respondents
-                      {briefCountries.length > 0 && (
-                        <> · {briefCountries.join(", ")}</>
+                      {(shown.audience?.countries ?? []).length > 0 && (
+                        <> · {(shown.audience?.countries ?? []).join(", ")}</>
                       )}
                     </p>
                     <p className="text-gray-500">
-                      Male {brief.audience?.gender_male ?? 50}% · Female{" "}
-                      {brief.audience?.gender_female ?? 50}%
+                      Male {shown.audience?.gender_male ?? 50}% · Female{" "}
+                      {shown.audience?.gender_female ?? 50}%
                     </p>
-                    {briefAgeSegments.length > 0 && (
+                    {(shown.audience?.age_segments ?? []).length > 0 && (
                       <div className="flex flex-wrap gap-1">
-                        {briefAgeSegments.map((seg) => (
+                        {(shown.audience?.age_segments ?? []).map((seg) => (
                           <span
                             key={seg}
                             className="rounded-full bg-white px-1.5 py-0.5 text-[10px] text-gray-600 ring-1 ring-gray-200"
                           >
-                            {seg}: {brief.audience?.age_distribution?.[seg] ?? 0}%
+                            {seg}: {shown.audience?.age_distribution?.[seg] ?? 0}%
                           </span>
                         ))}
                       </div>
@@ -1056,7 +1138,7 @@ export function StudyBriefCard({
       )}
 
       {canContinue && !editing && (
-        <div className="border-t border-gray-100 px-3.5 py-2.5">
+        <div className={cn("border-t border-gray-100", isPanel ? "shrink-0 px-4 py-3" : "px-3.5 py-2.5")}>
           <Button
             type="button"
             onClick={onContinue}
@@ -1075,8 +1157,8 @@ export function StudyBriefCard({
         </div>
       )}
 
-      {created && brief.study_id && (
-        <div className="border-t border-emerald-100 bg-emerald-50/50 px-3.5 py-2 text-[11px] text-emerald-800">
+      {created && brief.study_id && (isPanel || !panelOpen) && (
+        <div className="shrink-0 border-t border-emerald-100 bg-emerald-50/50 px-3.5 py-2 text-[11px] text-emerald-800">
           {editLockedMessage
             ? editLockedMessage
             : allowEdit

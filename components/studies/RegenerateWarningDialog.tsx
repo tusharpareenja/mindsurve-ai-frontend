@@ -52,11 +52,11 @@ export function RegenerateWarningDialog({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <AlertTriangle className="size-5 text-amber-500" />
-            Regenerate study tasks?
+            Apply changes and regenerate tasks?
           </DialogTitle>
           <DialogDescription>
             {message ||
-              "These changes affect the task matrix. Confirming will replace the previous generated tasks with a new revision."}
+              "Your statements are already used in generated tasks. To apply these changes, the previous tasks must be replaced and regenerated."}
           </DialogDescription>
         </DialogHeader>
 
@@ -78,7 +78,7 @@ export function RegenerateWarningDialog({
             disabled={confirming}
             className="cursor-pointer disabled:cursor-not-allowed"
           >
-            Keep previous tasks
+            Cancel changes
           </Button>
           <Button
             type="button"
@@ -92,7 +92,7 @@ export function RegenerateWarningDialog({
                 Regenerating…
               </>
             ) : (
-              "Regenerate tasks"
+              "Apply & regenerate"
             )}
           </Button>
         </DialogFooter>

@@ -1,145 +1,121 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
-import { Bot, Check, Loader2 } from "lucide-react"
-import type { BriefPhase, MindGenomicStudyType } from "@/types/study-brief"
+import { useEffect, useRef, useState } from "react"
+import { Bot } from "lucide-react"
 
-/** How long each status line stays active before advancing. */
-const STEP_MS = 2200
-/** How many completed lines stay visible above the current one. */
-const TRAIL = 2
+const DOT_MS = 400
+const TYPE_MS = 58
+const MAX_CHAR_MS = 96
+const MIN_FILL_MS = 36000
+const PAST_LINES = 5
 
-const THINKING = "MindSurve is thinking…"
+function splitThoughts(text: string): string[] {
+  return text
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+}
 
-const TEXT_STUDY_STEPS = [
-  THINKING,
-  "Your statements are getting ready…",
-  "Shaping your statement categories…",
-  "Matching statements to your idea…",
-  "Generating orientation text…",
-  "Writing respondent-facing copy…",
-  "Drafting your rating scale…",
-  "Setting up screening questions…",
-  "Checking statement length and variety…",
-  "Mapping your audience…",
-  "Balancing category coverage…",
-  "Polishing stimulus wording…",
-  "Preparing your text study…",
-]
-
-const GRID_STUDY_STEPS = [
-  THINKING,
-  "Organizing your images…",
-  "Grouping images into categories…",
-  "Naming visual elements…",
-  "Generating orientation text…",
-  "Drafting your rating scale…",
-  "Setting up screening questions…",
-  "Mapping your audience…",
-  "Checking image-to-category fit…",
-  "Preparing your visual study…",
-]
-
-const BUILD_STEPS = [
-  THINKING,
-  "Reading your project information…",
-  "Figuring out the best study format…",
-  "Putting your study together…",
-  "Your statements are getting ready…",
-  "Generating orientation text…",
-  "Drafting your rating scale…",
-  "Setting up screening questions…",
-  "Mapping your audience…",
-  "Preparing your study draft…",
-]
-
-function stepsFor(
-  phase: BriefPhase,
-  studyType: MindGenomicStudyType | null
-): string[] {
-  if (phase === "created") return [THINKING]
-  if (studyType === "text") return TEXT_STUDY_STEPS
-  if (studyType === "grid") return GRID_STUDY_STEPS
-  return BUILD_STEPS
+function sharedPrefix(a: string, b: string): number {
+  const n = Math.min(a.length, b.length)
+  let i = 0
+  while (i < n && a[i] === b[i]) i += 1
+  return i
 }
 
 type ThinkingStatusProps = {
-  phase: BriefPhase
-  studyType: MindGenomicStudyType | null
+  liveText?: string
+  streamDone?: boolean
 }
 
-export function ThinkingStatus({ phase, studyType }: ThinkingStatusProps) {
-  const steps = useMemo(() => stepsFor(phase, studyType), [phase, studyType])
-  const [index, setIndex] = useState(0)
-
-  // Restart only when the step *pool* identity changes (text vs grid vs build),
-  // not on every brief field flicker — so the stream keeps advancing.
-  const poolKey = `${phase === "created" ? "done" : "build"}:${studyType ?? "unknown"}`
+export function ThinkingStatus({
+  liveText = "",
+  streamDone = false,
+}: ThinkingStatusProps) {
+  const [dots, setDots] = useState(3)
+  const [shown, setShown] = useState("")
+  const targetRef = useRef(liveText)
+  const streamDoneRef = useRef(streamDone)
+  const shownRef = useRef("")
+  targetRef.current = liveText
+  streamDoneRef.current = streamDone
 
   useEffect(() => {
-    setIndex(0)
-  }, [poolKey])
-
-  useEffect(() => {
-    if (steps.length <= 1) return
     const id = window.setInterval(() => {
-      setIndex((i) => {
-        // Walk forward; hold on the last line instead of looping the same few.
-        if (i >= steps.length - 1) return i
-        return i + 1
-      })
-    }, STEP_MS)
+      setDots((n) => (n >= 6 ? 1 : n + 1))
+    }, DOT_MS)
     return () => window.clearInterval(id)
-  }, [poolKey, steps.length])
+  }, [])
 
-  const safeIndex = Math.min(index, steps.length - 1)
-  const trailStart = Math.max(0, safeIndex - TRAIL)
-  const visible = steps.slice(trailStart, safeIndex + 1)
+  useEffect(() => {
+    let cancelled = false
+    let timer = 0
+    const started = Date.now()
+
+    const tick = () => {
+      if (cancelled) return
+      const target = targetRef.current
+      setShown((prev) => {
+        let next = prev
+        if (!target.startsWith(prev)) {
+          const keep = sharedPrefix(prev, target)
+          next = target.slice(0, Math.min(keep + 1, target.length))
+        } else if (prev.length < target.length) {
+          next = target.slice(0, prev.length + 1)
+        } else {
+          next = target
+        }
+        shownRef.current = next
+        return next
+      })
+
+      const remaining = Math.max(0, target.length - shownRef.current.length)
+      const elapsed = Date.now() - started
+      let delay = TYPE_MS
+      if (streamDoneRef.current && remaining > 0) {
+        const stretch = Math.max(0, MIN_FILL_MS - elapsed) / remaining
+        delay = Math.min(MAX_CHAR_MS, Math.max(TYPE_MS, stretch))
+      }
+      timer = window.setTimeout(tick, delay)
+    }
+
+    timer = window.setTimeout(tick, TYPE_MS)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [])
+
+  const lines = splitThoughts(shown)
+  const past = lines.slice(0, -1).slice(-PAST_LINES)
+  const current = lines.at(-1)
 
   return (
-    <div className="flex items-start gap-3 text-sm text-gray-500">
+    <div className="flex items-start gap-3 text-sm">
       <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-full bg-blue-500">
         <Bot className="size-4 text-white" />
       </div>
-      <div className="min-w-0 max-w-[min(100%,28rem)] flex-1 space-y-1.5 rounded-2xl bg-gray-100 px-4 py-3">
-        {visible.map((label, i) => {
-          const absolute = trailStart + i
-          const isCurrent = absolute === safeIndex
-          return (
-            <div
-              key={`${absolute}-${label}`}
-              className={[
-                "flex items-start gap-2 transition-all duration-500",
-                isCurrent
-                  ? "animate-in fade-in slide-in-from-bottom-1 text-gray-700"
-                  : "text-gray-400",
-              ].join(" ")}
-            >
-              {isCurrent ? (
-                <Loader2 className="mt-0.5 size-3.5 shrink-0 animate-spin text-blue-500" />
-              ) : (
-                <Check className="mt-0.5 size-3.5 shrink-0 text-blue-400" />
-              )}
-              <span className={isCurrent ? "font-medium text-gray-700" : undefined}>
-                {label}
-              </span>
-            </div>
-          )
-        })}
-        {steps.length > 1 && (
-          <div
-            className="pt-1"
-            aria-hidden
-          >
-            <div className="h-1 overflow-hidden rounded-full bg-gray-200">
-              <div
-                className="h-full rounded-full bg-blue-400 transition-[width] duration-500 ease-out"
-                style={{
-                  width: `${((safeIndex + 1) / steps.length) * 100}%`,
-                }}
+      <div className="min-w-0 max-w-[min(100%,32rem)] flex-1 rounded-2xl bg-gray-100 px-4 py-3">
+        <p className="font-medium tracking-tight text-gray-800">
+          Thinking{".".repeat(dots)}
+        </p>
+        {current ? (
+          <div className="mt-2 space-y-1.5 text-[13px] leading-5">
+            {past.map((line, i) => (
+              <p key={`${i}-${line}`} className="text-gray-400">
+                {line}
+              </p>
+            ))}
+            <p className="text-gray-700">
+              {current}
+              <span
+                aria-hidden
+                className="ml-0.5 inline-block h-[1em] w-[2px] translate-y-[2px] bg-gray-800 align-middle animate-pulse"
               />
-            </div>
+            </p>
           </div>
+        ) : (
+          <p className="mt-2 text-[13px] text-gray-500">Reading your request</p>
         )}
       </div>
     </div>

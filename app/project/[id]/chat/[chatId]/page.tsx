@@ -9,6 +9,7 @@ import {
   User,
   ArrowLeft,
   Sparkles,
+  PanelRightOpen,
   Paperclip,
   Loader2,
   X,
@@ -28,6 +29,10 @@ import { Skeleton } from "@/components/feedback/Skeleton"
 import { ThinkingStatus } from "@/components/feedback/ThinkingStatus"
 import { StudyBriefCard } from "@/components/studies/StudyBriefCard"
 import { StudyGenerationCard } from "@/components/studies/StudyGenerationCard"
+import {
+  PendingRegenerationCard,
+  type PendingPreview,
+} from "@/components/studies/PendingRegenerationCard"
 import { StudyReadyCard } from "@/components/studies/StudyReadyCard"
 import { CollectionChoiceCard, type CollectionMode } from "@/components/studies/CollectionChoiceCard"
 import { RegenerateWarningDialog } from "@/components/studies/RegenerateWarningDialog"
@@ -36,6 +41,8 @@ import { useChats } from "@/context/ChatsContext"
 import { useToast } from "@/components/feedback/Toaster"
 import { useTaskGeneration } from "@/hooks/use-task-generation"
 import { useSyntheticCollection } from "@/hooks/use-synthetic-collection"
+import { useSpeechToText } from "@/hooks/use-speech-to-text"
+import { SpeechToTextButton } from "@/components/chat/SpeechToTextButton"
 import { ApiError } from "@/lib/api/types"
 import type { SyntheticMode } from "@/types/synthetic-collection"
 import { mapAiTurn, studyBriefApi } from "@/lib/api/studyBrief"
@@ -47,10 +54,33 @@ import {
   type UploadItem,
 } from "@/lib/chat-uploads"
 import type { ChatMessage } from "@/types"
-import type { AttachmentBrief, BriefPhase, StudyBrief } from "@/types/study-brief"
+import type {
+  AttachmentBrief,
+  BriefPhase,
+  BriefVersion,
+  StudyBrief,
+} from "@/types/study-brief"
 
 const MAX_ATTACHMENTS = 40
 const UPLOAD_CONCURRENCY = 4
+const PANEL_STORAGE_KEY = "mindsurve.study-panel-width"
+const PANEL_DEFAULT = 640
+const PANEL_MIN = 400
+const PANEL_MAX = 960
+
+type ProposalStatus = "applied" | "discarded"
+
+const proposalStorageKey = (chatId: string) =>
+  `mindsurve.regeneration-proposals.${chatId}`
+
+function readResolvedProposals(chatId: string): Record<string, ProposalStatus> {
+  try {
+    const raw = window.localStorage.getItem(proposalStorageKey(chatId))
+    return raw ? (JSON.parse(raw) as Record<string, ProposalStatus>) : {}
+  } catch {
+    return {}
+  }
+}
 
 export default function ChatPage() {
   const params = useParams()
@@ -86,6 +116,22 @@ function ChatPageInner() {
   const { toast } = useToast()
 
   const [draft, setDraft] = useState("")
+  const [thinkingLive, setThinkingLive] = useState("")
+  const [thoughtsStreamDone, setThoughtsStreamDone] = useState(false)
+  const thinkAbortRef = useRef<AbortController | null>(null)
+  const [briefVersions, setBriefVersions] = useState<BriefVersion[]>([])
+  const [viewingVersion, setViewingVersion] = useState(0)
+  const [restoringVersion, setRestoringVersion] = useState(false)
+  const speech = useSpeechToText({
+    onTranscript: setDraft,
+    onError: (_error, message) => {
+      toast({
+        type: "error",
+        title: "Couldn't use microphone",
+        description: message,
+      })
+    },
+  })
   const [sending, setSending] = useState(false)
   const [thinking, setThinking] = useState(false)
   const [confirming, setConfirming] = useState(false)
@@ -106,6 +152,9 @@ function ChatPageInner() {
   )
   const [changedFields, setChangedFields] = useState<string[]>([])
   const [regenMessage, setRegenMessage] = useState("")
+  const [resolvedProposals, setResolvedProposals] = useState<
+    Record<string, ProposalStatus>
+  >({})
   const [collectionChoice, setCollectionChoice] = useState<CollectionMode | null>(
     null
   )
@@ -115,11 +164,39 @@ function ChatPageInner() {
   const [engineSelecting, setEngineSelecting] = useState<SyntheticMode | null>(
     null
   )
+  const [artifactOpen, setArtifactOpen] = useState(false)
+  const [panelWidth, setPanelWidth] = useState(PANEL_DEFAULT)
   const autoStartRef = useRef(false)
+  const applyingProposalRef = useRef<string | null>(null)
+  const splitRef = useRef<HTMLDivElement>(null)
+  const panelWidthRef = useRef(PANEL_DEFAULT)
+  const resizingRef = useRef(false)
 
   useEffect(() => {
     autoStartRef.current = false
   }, [chatId])
+
+  useEffect(() => {
+    setResolvedProposals(readResolvedProposals(chatId))
+  }, [chatId])
+
+  const resolveProposal = useCallback(
+    (messageId: string, status: ProposalStatus) => {
+      setResolvedProposals((prev) => {
+        const next = { ...prev, [messageId]: status }
+        try {
+          window.localStorage.setItem(
+            proposalStorageKey(chatId),
+            JSON.stringify(next)
+          )
+        } catch {
+          /* storage unavailable — state still updates for this session */
+        }
+        return next
+      })
+    },
+    [chatId]
+  )
 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const folderInputRef = useRef<HTMLInputElement>(null)
@@ -195,6 +272,70 @@ function ChatPageInner() {
       brief.status === "created")
 
   useEffect(() => {
+    if (showBriefCard) setArtifactOpen(true)
+  }, [showBriefCard])
+
+  const openStudyPanel = useCallback(() => setArtifactOpen(true), [])
+  const closeStudyPanel = useCallback(() => setArtifactOpen(false), [])
+  const requestBriefEdit = useCallback(() => {
+    setArtifactOpen(true)
+    setEditRequestId((n) => n + 1)
+  }, [])
+
+  useEffect(() => {
+    const stored = Number(window.localStorage.getItem(PANEL_STORAGE_KEY))
+    if (Number.isFinite(stored) && stored >= PANEL_MIN) {
+      const next = Math.min(PANEL_MAX, stored)
+      panelWidthRef.current = next
+      setPanelWidth(next)
+    }
+  }, [])
+
+  const clampPanelWidth = useCallback((raw: number) => {
+    const container = splitRef.current?.getBoundingClientRect().width ?? 1200
+    const max = Math.min(PANEL_MAX, Math.floor(container * 0.72))
+    const min = Math.min(PANEL_MIN, Math.floor(container * 0.38))
+    return Math.max(min, Math.min(max, raw))
+  }, [])
+
+  const onResizePointerDown = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
+    event.preventDefault()
+    resizingRef.current = true
+    event.currentTarget.setPointerCapture(event.pointerId)
+    document.body.style.cursor = "col-resize"
+    document.body.style.userSelect = "none"
+  }, [])
+
+  const onResizePointerMove = useCallback(
+    (event: React.PointerEvent<HTMLButtonElement>) => {
+      if (!resizingRef.current || !splitRef.current) return
+      const next = clampPanelWidth(
+        splitRef.current.getBoundingClientRect().right - event.clientX
+      )
+      panelWidthRef.current = next
+      setPanelWidth(next)
+    },
+    [clampPanelWidth]
+  )
+
+  const onResizePointerUp = useCallback(
+    (event: React.PointerEvent<HTMLButtonElement>) => {
+      if (!resizingRef.current) return
+      resizingRef.current = false
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId)
+      }
+      document.body.style.cursor = ""
+      document.body.style.userSelect = ""
+      window.localStorage.setItem(
+        PANEL_STORAGE_KEY,
+        String(Math.round(panelWidthRef.current))
+      )
+    },
+    []
+  )
+
+  useEffect(() => {
     let cancelled = false
     setReady(false)
 
@@ -212,11 +353,36 @@ function ChatPageInner() {
         prevMessageCountRef.current = msgs.length
         setBrief(briefOut.study_brief)
         setPhase(briefOut.phase)
+        try {
+          const history = await studyBriefApi.versions(chatId)
+          if (!cancelled) {
+            setBriefVersions(history.versions)
+            setViewingVersion(history.current_version)
+          }
+        } catch {
+          /* versions are optional on first load */
+        }
         stickToBottomRef.current = true
 
         const last = msgs[msgs.length - 1]
         if (last?.role === "user" && briefOut.phase !== "created") {
+          setThinkingLive("")
+          setThoughtsStreamDone(false)
           setThinking(true)
+          const thinkAbort = new AbortController()
+          thinkAbortRef.current = thinkAbort
+          void studyBriefApi
+            .streamThoughts(
+              chatId,
+              last.content || "",
+              [],
+              setThinkingLive,
+              thinkAbort.signal
+            )
+            .catch(() => undefined)
+            .finally(() => {
+              if (!cancelled) setThoughtsStreamDone(true)
+            })
           try {
             const cont = await studyBriefApi.aiContinue(chatId)
             if (
@@ -228,6 +394,7 @@ function ChatPageInner() {
               setLocalMessages((prev) => [...prev, mapped.assistantMessage])
               setBrief(mapped.studyBrief)
               setPhase(mapped.phase)
+              void refreshVersions()
               if (mapped.suggestedChatTitle) {
                 void renameChat(chatId, mapped.suggestedChatTitle)
               }
@@ -235,7 +402,12 @@ function ChatPageInner() {
           } catch {
             // Non-fatal
           } finally {
-            if (!cancelled) setThinking(false)
+            thinkAbort.abort()
+            thinkAbortRef.current = null
+            if (!cancelled) {
+              setThinking(false)
+              setThinkingLive("")
+            }
           }
         }
 
@@ -515,6 +687,16 @@ function ChatPageInner() {
     })
   }
 
+  const refreshVersions = useCallback(async () => {
+    try {
+      const history = await studyBriefApi.versions(chatId)
+      setBriefVersions(history.versions)
+      setViewingVersion(history.current_version)
+    } catch {
+      /* keep the last known history */
+    }
+  }, [chatId])
+
   const handleSend = async (e?: React.FormEvent) => {
     e?.preventDefault()
     const content = draft.trim()
@@ -555,9 +737,24 @@ function ChatPageInner() {
     }
 
     setLocalMessages((prev) => [...prev, optimistic])
+    speech.stop()
     setDraft("")
+    setThinkingLive("")
+    setThoughtsStreamDone(false)
     setSending(true)
     setThinking(true)
+    const thinkAbort = new AbortController()
+    thinkAbortRef.current = thinkAbort
+    void studyBriefApi
+      .streamThoughts(
+        chatId,
+        content,
+        attachments,
+        setThinkingLive,
+        thinkAbort.signal
+      )
+      .catch(() => undefined)
+      .finally(() => setThoughtsStreamDone(true))
     scrollToBottom()
     requestAnimationFrame(resizeTextarea)
 
@@ -582,6 +779,7 @@ function ChatPageInner() {
       })
       setBrief(mapped.studyBrief)
       setPhase(mapped.phase)
+      void refreshVersions()
 
       if (
         mapped.suggestedChatTitle &&
@@ -599,8 +797,38 @@ function ChatPageInner() {
           err instanceof ApiError ? err.message : "Please try again.",
       })
     } finally {
+      thinkAbort.abort()
+      thinkAbortRef.current = null
       setSending(false)
       setThinking(false)
+      setThinkingLive("")
+    }
+  }
+
+  const handleRestoreVersion = async () => {
+    if (!viewingVersion || viewingVersion === briefVersions.at(-1)?.version) {
+      return
+    }
+    setRestoringVersion(true)
+    try {
+      const out = await studyBriefApi.restoreVersion(chatId, viewingVersion)
+      setBrief(out.study_brief)
+      setPhase(out.phase)
+      await refreshVersions()
+      toast({
+        type: "success",
+        title: `Restored version ${viewingVersion}`,
+        description: "A new draft version was created from that snapshot.",
+      })
+    } catch (err) {
+      toast({
+        type: "error",
+        title: "Couldn't restore that version",
+        description:
+          err instanceof ApiError ? err.message : "Please try again.",
+      })
+    } finally {
+      setRestoringVersion(false)
     }
   }
 
@@ -637,6 +865,15 @@ function ChatPageInner() {
       const out = await studyBriefApi.update(chatId, patch)
       setBrief(out.study_brief)
       setPhase(out.phase)
+      void refreshVersions()
+      try {
+        const messagePage = await loadMessages(chatId)
+        setLocalMessages(messagePage.messages)
+        setHasMoreMessages(messagePage.hasMore)
+        setNextBefore(messagePage.nextBefore)
+      } catch {
+        /* chat note is optional */
+      }
       toast({ type: "success", title: "Brief updated" })
     } catch (err) {
       toast({
@@ -663,6 +900,11 @@ function ChatPageInner() {
       setPhase(out.phase)
       setRegenOpen(false)
       setPendingPatch(null)
+      void refreshVersions()
+      if (applyingProposalRef.current) {
+        resolveProposal(applyingProposalRef.current, "applied")
+        applyingProposalRef.current = null
+      }
       toast({
         type: "info",
         title: "Regenerating tasks",
@@ -687,6 +929,7 @@ function ChatPageInner() {
       const out = await studyBriefApi.confirm(chatId)
       setBrief(out.study_brief)
       setPhase(out.phase)
+      void refreshVersions()
       const messagePage = await loadMessages(chatId)
       setLocalMessages(messagePage.messages)
       setHasMoreMessages(messagePage.hasMore)
@@ -694,21 +937,21 @@ function ChatPageInner() {
       toast({
         type: "success",
         title: "Study draft created",
-        description: "Starting task generation…",
+        description: "Task generation is starting in the background.",
       })
-      try {
-        const gen = await startGeneration()
-        applyRun(gen.run)
-      } catch (err) {
-        toast({
-          type: "error",
-          title: "Couldn't start task generation",
-          description:
-            err instanceof ApiError
-              ? err.message
-              : "Your draft is safe — use Retry when you’re ready.",
+      setConfirming(false)
+      void startGeneration()
+        .then((gen) => applyRun(gen.run))
+        .catch((err) => {
+          toast({
+            type: "error",
+            title: "Couldn't start task generation",
+            description:
+              err instanceof ApiError
+                ? err.message
+                : "Your draft is safe — use Retry when you’re ready.",
+          })
         })
-      }
       if (stickToBottomRef.current) scrollToBottom()
     } catch (err) {
       autoStartRef.current = false
@@ -787,8 +1030,12 @@ function ChatPageInner() {
     })
   }, [generationRun, toast, toastReadyRef])
 
-  // Lock only while confirming / generating tasks — collection can run while chatting.
-  const chatLocked = confirming || generationActive || generationStarting
+  // Creating the draft is atomic; task generation runs independently in the background.
+  const chatLocked = confirming
+
+  useEffect(() => {
+    if (chatLocked || sending || thinking) speech.stop()
+  }, [chatLocked, sending, thinking, speech.stop])
 
   const allowBriefEdit =
     !!generationRun &&
@@ -805,7 +1052,7 @@ function ChatPageInner() {
   const composerHint = generationLaunched
     ? "Study is collecting responses. You can keep chatting — study edits stay locked."
     : generationActive || generationStarting
-      ? "Generating tasks — you can leave this page and come back anytime."
+      ? null
       : generationReady
         ? "Tasks are ready. You can still message us, or preview / launch above."
         : generationFailed
@@ -814,13 +1061,13 @@ function ChatPageInner() {
             ? "Creating your study draft…"
             : null
 
-  const composerPlaceholder = generationLaunched
-    ? "Message MindSurve…"
-    : generationActive || generationStarting
-      ? "Generating tasks…"
+  const composerPlaceholder = speech.listening
+    ? "Listening…"
+    : generationLaunched || generationActive || generationStarting
+      ? "Message MindSurve…"
       : uploadsBusy
-        ? "Uploading files… send unlocks when ready"
-        : "Message MindSurve…"
+          ? "Uploading files… send unlocks when ready"
+          : "Message MindSurve…"
 
   const handleCollectionChoice = (mode: CollectionMode) => {
     setSelectingCollection(mode)
@@ -901,6 +1148,65 @@ function ChatPageInner() {
     !uploadsBusy &&
     !hasUploadErrors
 
+  // A chat edit that would rebuild the task matrix is held until the user confirms.
+  const pendingProposal = (() => {
+    const lastAssistant = [...localMessages]
+      .reverse()
+      .find((m) => m.role === "assistant")
+    if (!lastAssistant || resolvedProposals[lastAssistant.id] === "discarded") {
+      return null
+    }
+    const meta = lastAssistant.metadata as
+      | {
+          kind?: string
+          pending_patch?: Partial<StudyBrief>
+          changed_fields?: string[]
+          pending_preview?: PendingPreview
+        }
+      | undefined
+    if (meta?.kind !== "regeneration_request" || !meta.pending_patch) return null
+    return {
+      id: lastAssistant.id,
+      patch: meta.pending_patch,
+      changedFields: meta.changed_fields ?? [],
+      preview: meta.pending_preview,
+      applied: resolvedProposals[lastAssistant.id] === "applied",
+    }
+  })()
+
+  const latestVersion = briefVersions.at(-1)?.version ?? 0
+  const viewedSnapshot =
+    briefVersions.find((item) => item.version === viewingVersion)?.study_brief
+  const displayBrief =
+    viewingVersion && viewingVersion !== latestVersion && viewedSnapshot
+      ? viewedSnapshot
+      : brief
+
+  const briefCardProps = brief
+    ? {
+        brief,
+        displayBrief,
+        phase,
+        confirming,
+        allowEdit: allowBriefEdit,
+        editLockedMessage,
+        onContinue: () => void handleContinue(),
+        onSaveEdit: handleSaveBrief,
+        onOpenPanel: openStudyPanel,
+        onClosePanel: closeStudyPanel,
+        onRequestEdit: requestBriefEdit,
+        panelOpen: artifactOpen,
+        versionCurrent: latestVersion,
+        versionTotal: briefVersions.length,
+        viewingVersion: viewingVersion || latestVersion,
+        versionSummary: briefVersions.at(-1)?.summary,
+        versions: briefVersions,
+        onViewVersion: setViewingVersion,
+        onRestoreVersion: () => void handleRestoreVersion(),
+        restoringVersion,
+      }
+    : null
+
   return (
     <AppShell
       selectedProjectId={projectId}
@@ -917,11 +1223,23 @@ function ChatPageInner() {
             <span className="hidden sm:inline">{project.title}</span>
           </Link>
           <span className="text-gray-300">/</span>
-          <h1 className="truncate text-sm font-medium text-gray-900">
+          <h1 className="min-w-0 truncate text-sm font-medium text-gray-900">
             {chat.title}
           </h1>
+          {showBriefCard && !artifactOpen && (
+            <button
+              type="button"
+              onClick={openStudyPanel}
+              className="ml-auto inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium text-blue-600 hover:bg-blue-50"
+            >
+              <PanelRightOpen className="size-3.5" />
+              Open study
+            </button>
+          )}
         </div>
 
+        <div ref={splitRef} className="flex min-h-0 flex-1">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <div
           ref={scrollRef}
           className="min-h-0 flex-1 overflow-y-auto px-3 pb-4 sm:px-4"
@@ -959,25 +1277,39 @@ function ChatPageInner() {
                   <MessageBubble key={msg.id} message={msg} />
                 ))}
 
-                {thinking && (
+                {(thinking || confirming) && (
                   <ThinkingStatus
-                    phase={phase}
-                    studyType={brief?.study_type ?? null}
+                    liveText={thinkingLive}
+                    streamDone={thoughtsStreamDone}
                   />
                 )}
 
-                {showBriefCard && brief && !thinking && (
+                {pendingProposal && !thinking && (
                   <AssistantBlock>
-                    <StudyBriefCard
-                      brief={brief}
-                      phase={phase}
-                      confirming={confirming}
-                      allowEdit={allowBriefEdit}
-                      editLockedMessage={editLockedMessage}
-                      editRequestId={editRequestId}
-                      onContinue={() => void handleContinue()}
-                      onSaveEdit={handleSaveBrief}
+                    <PendingRegenerationCard
+                      changedFields={pendingProposal.changedFields}
+                      preview={pendingProposal.preview}
+                      applied={pendingProposal.applied}
+                      disabled={regenConfirming}
+                      onApply={() => {
+                        applyingProposalRef.current = pendingProposal.id
+                        setPendingPatch(pendingProposal.patch)
+                        setChangedFields(pendingProposal.changedFields)
+                        setRegenMessage(
+                          "Applying this edit replaces the tasks generated from the current version."
+                        )
+                        setRegenOpen(true)
+                      }}
+                      onDismiss={() =>
+                        resolveProposal(pendingProposal.id, "discarded")
+                      }
                     />
+                  </AssistantBlock>
+                )}
+
+                {showBriefCard && briefCardProps && !thinking && (
+                  <AssistantBlock>
+                    <StudyBriefCard {...briefCardProps} layout="compact" />
                   </AssistantBlock>
                 )}
 
@@ -1016,30 +1348,6 @@ function ChatPageInner() {
                     </AssistantBlock>
                   )}
 
-                {generationEnabled &&
-                  generationRun &&
-                  (generationActive || generationStarting || generationFailed) && (
-                    <AssistantBlock>
-                      <StudyGenerationCard
-                        run={generationRun}
-                        steps={generationSteps}
-                        retrying={generationStarting}
-                        onRetry={() => {
-                          void retryGeneration().catch((err) => {
-                            toast({
-                              type: "error",
-                              title: "Retry failed",
-                              description:
-                                err instanceof ApiError
-                                  ? err.message
-                                  : "Please try again.",
-                            })
-                          })
-                        }}
-                      />
-                    </AssistantBlock>
-                  )}
-
                 {generationRun &&
                   (generationReady || generationLaunched) &&
                   !generationActive && (
@@ -1061,11 +1369,7 @@ function ChatPageInner() {
                             })
                           }
                         }}
-                        onEdit={
-                          allowBriefEdit
-                            ? () => setEditRequestId((n) => n + 1)
-                            : undefined
-                        }
+                        onEdit={allowBriefEdit ? requestBriefEdit : undefined}
                         onLaunch={async () => {
                           try {
                             const res = await launchStudy()
@@ -1135,6 +1439,7 @@ function ChatPageInner() {
                   onCancel={() => {
                     setRegenOpen(false)
                     setPendingPatch(null)
+                    applyingProposalRef.current = null
                   }}
                   onConfirm={() => void confirmRegenerate()}
                 />
@@ -1146,6 +1451,40 @@ function ChatPageInner() {
         </div>
 
         <div className="sticky bottom-0 z-10 shrink-0 bg-gradient-to-t from-blue-500/10 via-white/85 to-transparent px-3 pb-4 pt-2 sm:px-4">
+          {generationRun &&
+            (generationActive || generationStarting || generationFailed) && (
+              <div className="mx-auto mb-2 max-w-3xl">
+                <StudyGenerationCard
+                  run={generationRun}
+                  steps={generationSteps}
+                  retrying={generationStarting}
+                  onRetry={() => {
+                    void retryGeneration().catch((err) => {
+                      toast({
+                        type: "error",
+                        title: "Retry failed",
+                        description:
+                          err instanceof ApiError
+                            ? err.message
+                            : "Please try again.",
+                      })
+                    })
+                  }}
+                />
+              </div>
+            )}
+
+          {generationStarting && !generationRun && (
+            <div className="mx-auto mb-2 flex max-w-3xl items-center gap-2 rounded-xl border border-gray-200/90 bg-white px-3 py-2 shadow-sm">
+              <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-blue-500" />
+              <Loader2 className="size-3.5 shrink-0 animate-spin text-blue-500" />
+              <span className="text-[13px] font-medium text-gray-900">
+                Generating study tasks
+              </span>
+              <span className="truncate text-xs text-gray-400">· Starting…</span>
+            </div>
+          )}
+
           {composerHint && (
             <p className="mx-auto mb-2 max-w-3xl text-center text-xs text-gray-500">
               {composerHint}
@@ -1157,9 +1496,11 @@ function ChatPageInner() {
             className="mx-auto max-w-3xl"
           >
             <div
-              className={`rounded-[28px] border border-blue-100/90 bg-white/95 shadow-sm backdrop-blur-md ${
-                chatLocked ? "opacity-60" : ""
-              }`}
+              className={`rounded-[28px] border bg-white/95 shadow-sm backdrop-blur-md ${
+                speech.listening
+                  ? "border-red-200 ring-2 ring-red-100"
+                  : "border-blue-100/90"
+              } ${chatLocked ? "opacity-60" : ""}`}
             >
               {uploads.length > 0 && (
                 <div className="border-b border-gray-100 px-2.5 pt-2.5 sm:px-3 sm:pt-3">
@@ -1244,7 +1585,10 @@ function ChatPageInner() {
               <textarea
                 ref={textareaRef}
                 value={draft}
-                onChange={(e) => setDraft(e.target.value)}
+                onChange={(e) => {
+                  if (speech.listening) speech.stop()
+                  setDraft(e.target.value)
+                }}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && !e.shiftKey) {
                     e.preventDefault()
@@ -1330,12 +1674,23 @@ function ChatPageInner() {
                   )}
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1">
                   {uploadsBusy && (
                     <span className="hidden text-[11px] text-gray-500 sm:inline">
                       Uploading {uploadingCount}…
                     </span>
                   )}
+                  {speech.listening && (
+                    <span className="hidden text-[11px] font-medium text-red-500 sm:inline">
+                      Listening…
+                    </span>
+                  )}
+                  <SpeechToTextButton
+                    listening={speech.listening}
+                    supported={speech.supported}
+                    disabled={chatLocked || sending || thinking}
+                    onToggle={() => speech.toggle(draft)}
+                  />
                   <Button
                     type="submit"
                     disabled={!canSend}
@@ -1351,14 +1706,68 @@ function ChatPageInner() {
               </div>
             </div>
             <p className="mt-1.5 text-center text-[11px] text-gray-400">
-              Enter to send · Shift+Enter for a new line · Folder upload uses
-              subfolders as categories
+              Enter to send · Shift+Enter for a new line · Mic to dictate ·
+              Folder upload uses subfolders as categories
             </p>
           </form>
+        </div>
+        </div>
+
+        {showBriefCard && briefCardProps && artifactOpen && (
+          <>
+            <button
+              type="button"
+              aria-label="Resize study panel"
+              onPointerDown={onResizePointerDown}
+              onPointerMove={onResizePointerMove}
+              onPointerUp={onResizePointerUp}
+              onPointerCancel={onResizePointerUp}
+              className="relative hidden w-1.5 shrink-0 cursor-col-resize bg-gray-200 transition-colors hover:bg-blue-400 lg:block"
+            >
+              <span className="absolute inset-y-0 -left-1 -right-1" />
+            </button>
+            <aside
+              style={{ width: panelWidth }}
+              className="hidden min-h-0 shrink-0 bg-white lg:flex lg:flex-col"
+            >
+              <StudyBriefCard
+                {...briefCardProps}
+                layout="panel"
+                editRequestId={editRequestId}
+              />
+            </aside>
+            <div className="fixed inset-0 z-40 lg:hidden">
+              <button
+                type="button"
+                className="absolute inset-0 cursor-pointer bg-black/30"
+                aria-label="Close study panel"
+                onClick={closeStudyPanel}
+              />
+              <aside className="absolute inset-y-0 right-0 flex w-full max-w-xl flex-col bg-white shadow-2xl">
+                <StudyBriefCard
+                  {...briefCardProps}
+                  layout="panel"
+                  editRequestId={editRequestId}
+                />
+              </aside>
+            </div>
+          </>
+        )}
         </div>
       </main>
     </AppShell>
   )
+}
+
+const CHANGE_FIELD_LABELS: Record<string, string> = {
+  title: "Title",
+  background: "Background",
+  main_question: "Main question",
+  orientation_text: "Orientation",
+  rating_scale: "Rating scale",
+  categories: "Categories & statements",
+  classification_questions: "Screening questions",
+  audience: "Audience",
 }
 
 function MessageBubble({ message }: { message: ChatMessage }) {
@@ -1369,6 +1778,9 @@ function MessageBubble({ message }: { message: ChatMessage }) {
         filename?: string
         category?: string
       }[])
+    : []
+  const changedFields = Array.isArray(message.metadata?.changed_fields)
+    ? (message.metadata?.changed_fields as string[]).filter(Boolean)
     : []
 
   return (
@@ -1388,7 +1800,21 @@ function MessageBubble({ message }: { message: ChatMessage }) {
             {message.content}
           </p>
         ) : (
-          <AssistantMarkdown content={message.content} />
+          <>
+            {changedFields.length > 0 && (
+              <div className="mb-2 flex flex-wrap gap-1.5">
+                {changedFields.map((field) => (
+                  <span
+                    key={field}
+                    className="rounded-full bg-white px-2 py-0.5 text-[11px] font-medium text-blue-700"
+                  >
+                    {CHANGE_FIELD_LABELS[field] || field}
+                  </span>
+                ))}
+              </div>
+            )}
+            <AssistantMarkdown content={message.content} />
+          </>
         )}
         {attachments.length > 0 && (
           <div className="mt-2 flex flex-wrap gap-1.5">
