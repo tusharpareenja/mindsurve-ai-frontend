@@ -38,12 +38,16 @@ type ChatsContextValue = {
     projectId: string,
     content: string
   ) => Promise<{ chat: Chat; userMessage: ChatMessage }>
+  startHomeChat: (
+    content: string
+  ) => Promise<{ chat: Chat; userMessage: ChatMessage }>
   addMessage: (
     chatId: string,
     role: MessageRole,
     content: string
   ) => Promise<ChatMessage>
   renameChat: (chatId: string, title: string) => Promise<Chat | null>
+  moveChat: (chatId: string, projectId: string) => Promise<Chat | null>
   deleteChat: (chatId: string) => Promise<boolean>
   clearProjectChats: (projectId: string) => void
   refresh: () => Promise<void>
@@ -89,7 +93,7 @@ export function ChatsProvider({ children }: { children: ReactNode }) {
       setChats([])
       setPreviews({})
       setMessagesByChat({})
-      setIsLoading(false)
+    setIsLoading(false)
       return
     }
 
@@ -220,10 +224,47 @@ export function ChatsProvider({ children }: { children: ReactNode }) {
     [upsertChat]
   )
 
+  const startHomeChat = useCallback(
+    async (content: string) => {
+      const data = await chatsApi.startHome(content)
+      const chat = mapChat(data.chat)
+      const userMessage = mapMessage(data.message)
+      upsertChat(chat, data.chat.last_message_preview ?? userMessage.content)
+      setMessagesByChat((prev) => ({ ...prev, [chat.id]: [userMessage] }))
+
+      void generateChatTitle(content).then(async (title) => {
+        try {
+          const renamed = await chatsApi.rename(chat.id, title)
+          upsertChat(mapChat(renamed))
+        } catch {
+          // best-effort
+        }
+      })
+
+      return { chat, userMessage }
+    },
+    [upsertChat]
+  )
+
   const renameChat = useCallback(
     async (chatId: string, title: string) => {
       try {
         const dto = await chatsApi.rename(chatId, title)
+        const updated = mapChat(dto)
+        upsertChat(updated)
+      return updated
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 404) return null
+        throw err
+      }
+    },
+    [upsertChat]
+  )
+
+  const moveChat = useCallback(
+    async (chatId: string, projectId: string) => {
+      try {
+        const dto = await chatsApi.update(chatId, { projectId })
         const updated = mapChat(dto)
         upsertChat(updated)
         return updated
@@ -283,8 +324,10 @@ export function ChatsProvider({ children }: { children: ReactNode }) {
       loadMessages,
       createChat,
       startChatWithMessage,
+      startHomeChat,
       addMessage,
       renameChat,
+      moveChat,
       deleteChat,
       clearProjectChats,
       refresh,
@@ -299,8 +342,10 @@ export function ChatsProvider({ children }: { children: ReactNode }) {
       loadMessages,
       createChat,
       startChatWithMessage,
+      startHomeChat,
       addMessage,
       renameChat,
+      moveChat,
       deleteChat,
       clearProjectChats,
       refresh,

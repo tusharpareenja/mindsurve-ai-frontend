@@ -1,4 +1,4 @@
-export type WorkflowType = "beginner"
+export type WorkflowType = "beginner" | "inbox"
 
 export type ProjectStatus =
   | "CREATED"
@@ -36,6 +36,8 @@ export type Project = {
   idea?: string
   workflowType: WorkflowType
   status: ProjectStatus
+  /** Hidden personal workspace for chat-first entry (not shown as a project). */
+  isInbox?: boolean
   createdAt: Date
   updatedAt?: Date
 }

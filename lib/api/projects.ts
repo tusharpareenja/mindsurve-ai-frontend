@@ -10,6 +10,7 @@ export type ProjectDto = {
   idea?: string | null
   workflow_type: WorkflowType
   status: ProjectStatus
+  is_inbox?: boolean
   created_at: string
   updated_at: string
 }
@@ -22,6 +23,7 @@ export function mapProject(dto: ProjectDto): Project {
     idea: dto.idea ?? undefined,
     workflowType: dto.workflow_type,
     status: dto.status,
+    isInbox: Boolean(dto.is_inbox || dto.workflow_type === "inbox"),
     createdAt: new Date(dto.created_at),
     updatedAt: new Date(dto.updated_at),
   }
@@ -33,6 +35,9 @@ export const projectsApi = {
   },
   get(id: string) {
     return api.get<ProjectDto>(`/projects/${id}`)
+  },
+  inbox() {
+    return api.get<ProjectDto>("/projects/inbox")
   },
   create(input: { title: string }) {
     return api.post<ProjectDto>("/projects", input)

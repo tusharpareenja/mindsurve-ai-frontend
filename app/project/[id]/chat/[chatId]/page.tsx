@@ -10,6 +10,7 @@ import {
   ArrowLeft,
   Sparkles,
   PanelRightOpen,
+  BarChart3,
   Paperclip,
   Loader2,
   X,
@@ -102,6 +103,7 @@ function ChatPageInner() {
 
   const {
     getProject,
+    ensureInbox,
     isLoading: projectsLoading,
     refresh: refreshProjects,
   } = useProjects()
@@ -241,6 +243,14 @@ function ChatPageInner() {
     start: startSynthetic,
     retry: retrySynthetic,
   } = useSyntheticCollection(chatId, generationLaunched)
+
+  const analyticsHref = brief?.study_id
+    ? `/project/${projectId}/chat/${chatId}/analytics?studyId=${encodeURIComponent(brief.study_id)}`
+    : null
+  const hasRespondents =
+    (syntheticStats?.completed ?? 0) >= 1 ||
+    (syntheticStats?.total ?? 0) >= 1 ||
+    (syntheticRun?.respondents_completed ?? 0) >= 1
 
   const uploadingCount = uploads.filter((u) => u.status === "uploading").length
   const readyUploads = uploads.filter((u) => u.status === "ready" && u.url)
@@ -501,14 +511,20 @@ function ChatPageInner() {
     if (project && chat) return
     const t = window.setTimeout(() => {
       void (async () => {
-        await Promise.all([refreshProjects(), refreshChats()])
+        await Promise.all([
+          refreshProjects(),
+          refreshChats(),
+          ensureInbox().catch(() => null),
+        ])
         const p = getProject(projectId)
         if (!p) {
           router.replace("/welcome")
           return
         }
         const c = getChatsForProject(projectId).find((x) => x.id === chatId)
-        if (!c) router.replace(`/project/${projectId}`)
+        if (!c) {
+          router.replace(p.isInbox ? "/welcome" : `/project/${projectId}`)
+        }
       })()
     }, 400)
     return () => window.clearTimeout(t)
@@ -521,6 +537,7 @@ function ChatPageInner() {
     chatId,
     refreshProjects,
     refreshChats,
+    ensureInbox,
     getProject,
     getChatsForProject,
     router,
@@ -1211,30 +1228,55 @@ function ChatPageInner() {
     <AppShell
       selectedProjectId={projectId}
       selectedChatId={chatId}
-      projectTitle={`${project.title} / ${chat.title}`}
+      projectTitle={
+        project.isInbox ? chat.title : `${project.title} / ${chat.title}`
+      }
     >
       <main className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
         <div className="flex shrink-0 items-center gap-2 border-b border-gray-200/50 bg-white/50 px-3 py-2 backdrop-blur-sm sm:px-4">
           <Link
-            href={`/project/${projectId}`}
+            href={project.isInbox ? "/welcome" : `/project/${projectId}`}
             className="inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1.5 text-sm text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-800"
           >
             <ArrowLeft className="size-4" />
-            <span className="hidden sm:inline">{project.title}</span>
+            <span className="hidden sm:inline">
+              {project.isInbox ? "Home" : project.title}
+            </span>
           </Link>
           <span className="text-gray-300">/</span>
           <h1 className="min-w-0 truncate text-sm font-medium text-gray-900">
             {chat.title}
           </h1>
           {showBriefCard && !artifactOpen && (
-            <button
-              type="button"
-              onClick={openStudyPanel}
-              className="ml-auto inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium text-blue-600 hover:bg-blue-50"
-            >
-              <PanelRightOpen className="size-3.5" />
-              Open study
-            </button>
+            <div className="ml-auto flex items-center gap-1">
+              {analyticsHref ? (
+                hasRespondents ? (
+                  <Link
+                    href={analyticsHref}
+                    className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium text-blue-600 hover:bg-blue-50"
+                  >
+                    <BarChart3 className="size-3.5" />
+                    See Analytics
+                  </Link>
+                ) : (
+                  <span
+                    title="Available after at least one respondent"
+                    className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium text-gray-400"
+                  >
+                    <BarChart3 className="size-3.5" />
+                    See Analytics
+                  </span>
+                )
+              ) : null}
+              <button
+                type="button"
+                onClick={openStudyPanel}
+                className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium text-blue-600 hover:bg-blue-50"
+              >
+                <PanelRightOpen className="size-3.5" />
+                Open study
+              </button>
+            </div>
           )}
         </div>
 
@@ -1414,6 +1456,17 @@ function ChatPageInner() {
                       statusMessage={syntheticRun?.message ?? null}
                       collecting={syntheticActive || syntheticStarting}
                       collectionFailed={syntheticFailed}
+                      analyticsHref={analyticsHref}
+                      showCompleteAnalysis={
+                        Boolean(
+                          engineChoice &&
+                            analyticsHref &&
+                            hasRespondents &&
+                            !syntheticActive &&
+                            !syntheticStarting &&
+                            !syntheticFailed
+                        )
+                      }
                       retrying={syntheticStarting}
                       onRetryCollection={() => {
                         void retrySynthetic().catch((err) => {

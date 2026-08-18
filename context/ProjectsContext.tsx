@@ -17,7 +17,11 @@ import type { Project } from "@/types"
 
 type ProjectsContextValue = {
   projects: Project[]
+  /** Named projects only (hides personal inbox). */
+  namedProjects: Project[]
+  inboxProject: Project | undefined
   isLoading: boolean
+  ensureInbox: () => Promise<Project>
   createProject: (title: string) => Promise<Project>
   updateProjectTitle: (id: string, title: string) => Promise<Project | null>
   deleteProject: (id: string) => Promise<boolean>
@@ -64,14 +68,33 @@ export function ProjectsProvider({ children }: { children: ReactNode }) {
     }
   }, [authLoading, isAuthenticated, refresh])
 
-  const createProject = useCallback(async (title: string) => {
-    const dto = await projectsApi.create({ title })
-    const project = mapProject(dto)
+  const upsertProject = useCallback((project: Project) => {
     flushSync(() => {
-      setProjects((prev) => [project, ...prev.filter((p) => p.id !== project.id)])
+      setProjects((prev) => [
+        project,
+        ...prev.filter((p) => p.id !== project.id),
+      ])
     })
-    return project
   }, [])
+
+  const ensureInbox = useCallback(async () => {
+    const existing = projects.find((p) => p.isInbox)
+    if (existing) return existing
+    const dto = await projectsApi.inbox()
+    const project = mapProject(dto)
+    upsertProject(project)
+    return project
+  }, [projects, upsertProject])
+
+  const createProject = useCallback(
+    async (title: string) => {
+      const dto = await projectsApi.create({ title })
+      const project = mapProject(dto)
+      upsertProject(project)
+      return project
+    },
+    [upsertProject]
+  )
 
   const updateProjectTitle = useCallback(async (id: string, title: string) => {
     try {
@@ -88,6 +111,13 @@ export function ProjectsProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const deleteProject = useCallback(async (id: string) => {
+    const target = projects.find((p) => p.id === id)
+    if (target?.isInbox) {
+      throw new ApiError(
+        "Personal chats can’t be deleted as a project.",
+        422
+      )
+    }
     try {
       await projectsApi.delete(id)
       flushSync(() => {
@@ -98,17 +128,29 @@ export function ProjectsProvider({ children }: { children: ReactNode }) {
       if (err instanceof ApiError && err.status === 404) return false
       throw err
     }
-  }, [])
+  }, [projects])
 
   const getProject = useCallback(
     (id: string) => projects.find((p) => p.id === id),
     [projects]
   )
 
+  const namedProjects = useMemo(
+    () => projects.filter((p) => !p.isInbox),
+    [projects]
+  )
+  const inboxProject = useMemo(
+    () => projects.find((p) => p.isInbox),
+    [projects]
+  )
+
   const value = useMemo(
     () => ({
       projects,
+      namedProjects,
+      inboxProject,
       isLoading: authLoading || isLoading,
+      ensureInbox,
       createProject,
       updateProjectTitle,
       deleteProject,
@@ -117,8 +159,11 @@ export function ProjectsProvider({ children }: { children: ReactNode }) {
     }),
     [
       projects,
+      namedProjects,
+      inboxProject,
       authLoading,
       isLoading,
+      ensureInbox,
       createProject,
       updateProjectTitle,
       deleteProject,

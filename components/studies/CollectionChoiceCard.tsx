@@ -1,6 +1,7 @@
 "use client"
 
-import { Bot, Dices, Loader2, RefreshCw, Users } from "lucide-react"
+import { Bot, Dices, Loader2, RefreshCw, Users, BarChart3 } from "lucide-react"
+import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { ResponseStatistics } from "@/components/studies/ResponseStatistics"
 import type { ResponseStats } from "@/types/synthetic-collection"
@@ -24,6 +25,9 @@ type CollectionChoiceCardProps = {
   collectionFailed?: boolean
   onRetryCollection?: () => void
   retrying?: boolean
+  /** When collection finished successfully — link to full analytics. */
+  analyticsHref?: string | null
+  showCompleteAnalysis?: boolean
 }
 
 export function CollectionChoiceCard({
@@ -41,6 +45,8 @@ export function CollectionChoiceCard({
   collectionFailed = false,
   onRetryCollection,
   retrying = false,
+  analyticsHref = null,
+  showCompleteAnalysis = false,
 }: CollectionChoiceCardProps) {
   if (choice === "cint") {
     return (
@@ -152,6 +158,27 @@ export function CollectionChoiceCard({
             }
             progress={collecting ? progress : null}
           />
+        )}
+        {showCompleteAnalysis && analyticsHref && !collecting && !collectionFailed && (
+          <div className="overflow-hidden rounded-2xl border border-blue-100 bg-white shadow-sm">
+            <div className="flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0">
+                <h3 className="text-sm font-semibold text-gray-900">
+                  Analysis is ready
+                </h3>
+                <p className="mt-0.5 text-xs leading-relaxed text-gray-500">
+                  Open the full analytics dashboard for this study.
+                </p>
+              </div>
+              <Link
+                href={analyticsHref}
+                className="inline-flex h-10 cursor-pointer items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 text-sm font-medium text-white transition-colors hover:bg-blue-700"
+              >
+                <BarChart3 className="size-4" />
+                See complete analysis
+              </Link>
+            </div>
+          </div>
         )}
       </div>
     )

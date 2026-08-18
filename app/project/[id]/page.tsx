@@ -4,9 +4,10 @@ import { useEffect, useState } from "react"
 import { useParams, useRouter } from "next/navigation"
 import Link from "next/link"
 import { Folder, Plus, Pencil, MessageSquare } from "lucide-react"
-import { AppShell } from "@/components/layout/AppShell"
+import { AppShell, useChatActions } from "@/components/layout/AppShell"
 import { AuthGate } from "@/components/auth/AuthGate"
 import { RenameProjectDialog } from "@/components/project/RenameProjectDialog"
+import { ChatMenu } from "@/components/chat/ChatMenu"
 import { Skeleton } from "@/components/feedback/Skeleton"
 import { Input } from "@/components/ui/input"
 import { SpeechToTextButton } from "@/components/chat/SpeechToTextButton"
@@ -57,12 +58,19 @@ function ProjectWorkspace() {
 
   useEffect(() => {
     if (isLoading) return
+    if (project?.isInbox) {
+      router.replace("/welcome")
+      return
+    }
     if (project) return
     const t = window.setTimeout(() => {
       void refresh().then(() => {
-        if (!getProject(projectId)) {
+        const p = getProject(projectId)
+        if (!p) {
           router.replace("/welcome")
+          return
         }
+        if (p.isInbox) router.replace("/welcome")
       })
     }, 300)
     return () => window.clearTimeout(t)
@@ -198,34 +206,11 @@ function ProjectWorkspace() {
             </p>
           ) : (
             <ul className="divide-y divide-gray-100 rounded-xl border border-gray-200 bg-white">
-              {chats.map((chat) => {
-                const preview = getPreview(chat.id)
-                return (
-                  <li key={chat.id}>
-                    <Link
-                      href={`/project/${projectId}/chat/${chat.id}`}
-                      className="cursor-pointer flex items-start gap-3 px-4 py-3 transition-colors hover:bg-gray-50"
-                    >
-                      <MessageSquare className="mt-0.5 size-4 shrink-0 text-gray-400" />
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-baseline justify-between gap-3">
-                          <p className="truncate text-sm font-medium text-gray-900">
-                            {chat.title}
-                          </p>
-                          <span className="shrink-0 text-xs text-gray-400">
-                            {formatRelativeDate(chat.updatedAt)}
-                          </span>
-                        </div>
-                        {preview && (
-                          <p className="mt-0.5 truncate text-xs text-gray-500">
-                            {preview}
-                          </p>
-                        )}
-                      </div>
-                    </Link>
-                  </li>
-                )
-              })}
+              <ProjectChatRows
+                projectId={projectId}
+                chats={chats}
+                getPreview={getPreview}
+              />
             </ul>
           )}
         </div>
@@ -238,5 +223,65 @@ function ProjectWorkspace() {
         onClose={() => setRenameOpen(false)}
       />
     </AppShell>
+  )
+}
+
+function ProjectChatRows({
+  projectId,
+  chats,
+  getPreview,
+}: {
+  projectId: string
+  chats: { id: string; title: string; updatedAt: Date }[]
+  getPreview: (chatId: string) => string | undefined
+}) {
+  const { renameChat, deleteChat, moveChat } = useChatActions()
+
+  return (
+    <>
+      {chats.map((chat) => {
+        const preview = getPreview(chat.id)
+        const target = {
+          id: chat.id,
+          title: chat.title,
+          projectId,
+        }
+        return (
+          <li key={chat.id} className="group/chat relative">
+            <div className="flex items-start">
+              <Link
+                href={`/project/${projectId}/chat/${chat.id}`}
+                className="cursor-pointer flex min-w-0 flex-1 items-start gap-3 px-4 py-3 transition-colors hover:bg-gray-50"
+              >
+                <MessageSquare className="mt-0.5 size-4 shrink-0 text-gray-400" />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-baseline justify-between gap-3">
+                    <p className="truncate text-sm font-medium text-gray-900">
+                      {chat.title}
+                    </p>
+                    <span className="shrink-0 text-xs text-gray-400">
+                      {formatRelativeDate(chat.updatedAt)}
+                    </span>
+                  </div>
+                  {preview && (
+                    <p className="mt-0.5 truncate text-xs text-gray-500">
+                      {preview}
+                    </p>
+                  )}
+                </div>
+              </Link>
+              <div className="flex items-center pr-2 pt-2.5">
+                <ChatMenu
+                  moveLabel="Move to project"
+                  onRename={() => renameChat(target)}
+                  onMove={() => moveChat(target)}
+                  onDelete={() => deleteChat(target)}
+                />
+              </div>
+            </div>
+          </li>
+        )
+      })}
+    </>
   )
 }

@@ -66,11 +66,21 @@ export const chatsApi = {
   start(projectId: string, content: string) {
     return api.post<ChatStartDto>(`/projects/${projectId}/chats/start`, { content })
   },
+  /** Chat-first home: creates chat in personal inbox (no project required). */
+  startHome(content: string) {
+    return api.post<ChatStartDto>(`/chats/start`, { content })
+  },
   get(chatId: string) {
     return api.get<ChatDto>(`/chats/${chatId}`)
   },
   rename(chatId: string, title: string) {
     return api.patch<ChatDto>(`/chats/${chatId}`, { title })
+  },
+  update(chatId: string, input: { title?: string; projectId?: string }) {
+    return api.patch<ChatDto>(`/chats/${chatId}`, {
+      ...(input.title !== undefined ? { title: input.title } : {}),
+      ...(input.projectId !== undefined ? { project_id: input.projectId } : {}),
+    })
   },
   delete(chatId: string) {
     return api.delete<{ message: string }>(`/chats/${chatId}`)

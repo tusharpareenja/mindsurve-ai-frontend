@@ -63,6 +63,18 @@ async function refreshAccessToken(): Promise<string | null> {
   })
 }
 
+/** Ensure an access token exists (refresh via HttpOnly cookie if needed). */
+export async function ensureAccessToken(): Promise<string | null> {
+  const existing = getAccessToken()
+  if (existing) return existing
+  return refreshAccessToken()
+}
+
+/** Force a new access token from the refresh cookie (updates AuthContext memory). */
+export async function forceRefreshAccessToken(): Promise<string | null> {
+  return refreshAccessToken()
+}
+
 export type RequestOptions = {
   method?: string
   body?: unknown

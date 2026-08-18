@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import {
   CheckCircle2,
   Loader2,
@@ -16,6 +16,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { VersionHistoryBar } from "@/components/studies/VersionHistoryBar"
+import { useToast } from "@/components/feedback/Toaster"
 import { cn } from "@/lib/utils"
 import {
   AGE_SEGMENTS,
@@ -28,6 +29,21 @@ import {
   type BriefVersion,
   type StudyBrief,
 } from "@/types/study-brief"
+
+/** Stable snapshot of editable brief fields — used to detect chat/AI updates. */
+function briefEditFingerprint(source: StudyBrief): string {
+  return JSON.stringify({
+    title: source.title,
+    background: source.background,
+    main_question: source.main_question,
+    orientation_text: source.orientation_text,
+    study_type: source.study_type,
+    categories: source.categories,
+    classification_questions: source.classification_questions,
+    audience: source.audience,
+    status: source.status,
+  })
+}
 
 type StudyBriefCardProps = {
   brief: StudyBrief
@@ -83,6 +99,7 @@ export function StudyBriefCard({
   onRestoreVersion,
   restoringVersion = false,
 }: StudyBriefCardProps) {
+  const { toast } = useToast()
   const isPanel = layout === "panel"
   const shown = displayBrief ?? brief
   const viewingHistory =
@@ -125,6 +142,37 @@ export function StudyBriefCard({
       elements: c.elements.map((e) => ({ ...e })),
     }))
   )
+  const syncedFingerprintRef = useRef<string | null>(null)
+  const briefFingerprint = useMemo(() => briefEditFingerprint(brief), [brief])
+
+  const applyBriefToForm = (source: StudyBrief) => {
+    setTitle(source.title)
+    setBackground(source.background)
+    setMainQuestion(source.main_question)
+    setOrientation(source.orientation_text)
+    setRespondents(
+      source.audience?.number_of_respondents
+        ? String(source.audience.number_of_respondents)
+        : ""
+    )
+    setAgeSegments(source.audience?.age_segments ?? [])
+    setAgeDistribution(source.audience?.age_distribution ?? {})
+    setCountries((source.audience?.countries ?? []).join(", "))
+    setGenderMale(String(source.audience?.gender_male ?? 50))
+    setGenderFemale(String(source.audience?.gender_female ?? 50))
+    setClassificationQuestions(
+      source.classification_questions.map((q) => ({
+        ...q,
+        options: [...q.options],
+      }))
+    )
+    setCategories(
+      source.categories.map((c) => ({
+        name: c.name,
+        elements: c.elements.map((e) => ({ ...e })),
+      }))
+    )
+  }
 
   const created = phase === "created" || brief.status === "created"
   const canContinue = phase === "brief_ready" && !created && !viewingHistory
@@ -202,35 +250,27 @@ export function StudyBriefCard({
   }
 
   const startEdit = () => {
-    setTitle(brief.title)
-    setBackground(brief.background)
-    setMainQuestion(brief.main_question)
-    setOrientation(brief.orientation_text)
-    setRespondents(
-      brief.audience?.number_of_respondents
-        ? String(brief.audience.number_of_respondents)
-        : ""
-    )
-    setAgeSegments(brief.audience?.age_segments ?? [])
-    setAgeDistribution(brief.audience?.age_distribution ?? {})
-    setCountries((brief.audience?.countries ?? []).join(", "))
-    setGenderMale(String(brief.audience?.gender_male ?? 50))
-    setGenderFemale(String(brief.audience?.gender_female ?? 50))
-    setClassificationQuestions(
-      brief.classification_questions.map((q) => ({
-        ...q,
-        options: [...q.options],
-      }))
-    )
-    setCategories(
-      brief.categories.map((c) => ({
-        name: c.name,
-        elements: c.elements.map((e) => ({ ...e })),
-      }))
-    )
+    applyBriefToForm(brief)
+    syncedFingerprintRef.current = briefEditFingerprint(brief)
     setEditing(true)
     onOpenPanel?.()
   }
+
+  // When chat/AI updates the brief while the editor is open, refresh the form.
+  useEffect(() => {
+    if (!editing || saving) return
+    if (syncedFingerprintRef.current === briefFingerprint) return
+    const hadSyncedBefore = syncedFingerprintRef.current !== null
+    applyBriefToForm(brief)
+    syncedFingerprintRef.current = briefFingerprint
+    if (hadSyncedBefore) {
+      toast({
+        type: "info",
+        title: "Study updated",
+        description: "The editor refreshed with changes from chat.",
+      })
+    }
+  }, [brief, briefFingerprint, editing, saving, toast])
 
   // External "Edit study" from ready card.
   useEffect(() => {
@@ -294,6 +334,7 @@ export function StudyBriefCard({
           gender_female: Number.isFinite(parsedFemale) ? parsedFemale : 50,
         },
       })
+      syncedFingerprintRef.current = null
       setEditing(false)
     } finally {
       setSaving(false)
@@ -987,7 +1028,10 @@ export function StudyBriefCard({
                 </Button>
                 <button
                   type="button"
-                  onClick={() => setEditing(false)}
+                  onClick={() => {
+                    syncedFingerprintRef.current = null
+                    setEditing(false)
+                  }}
                   className="inline-flex cursor-pointer items-center gap-1 rounded-lg px-2 text-xs text-gray-500 hover:bg-gray-100"
                 >
                   <X className="size-3.5" />

@@ -14,14 +14,20 @@ import { ApiError } from "@/lib/api/types"
 type CreateProjectDialogProps = {
   open: boolean
   onClose: () => void
+  /** If set, the new project receives this chat instead of a blank one. */
+  moveChatId?: string | null
 }
 
 /** Single shared modal for creating a beginner project — title only. */
-export function CreateProjectDialog({ open, onClose }: CreateProjectDialogProps) {
+export function CreateProjectDialog({
+  open,
+  onClose,
+  moveChatId,
+}: CreateProjectDialogProps) {
   const router = useRouter()
   const { toast } = useToast()
   const { createProject } = useProjects()
-  const { createChat } = useChats()
+  const { createChat, moveChat } = useChats()
   const [title, setTitle] = useState("")
   const [submitting, setSubmitting] = useState(false)
 
@@ -47,11 +53,18 @@ export function CreateProjectDialog({ open, onClose }: CreateProjectDialogProps)
     try {
       const newProject = await createProject(trimmed)
       let destination = `/project/${newProject.id}`
-      try {
-        const chat = await createChat(newProject.id, "New Chat")
-        destination = `/project/${newProject.id}/chat/${chat.id}`
-      } catch {
-        // Project exists; land on the project hub if chat creation fails.
+      if (moveChatId) {
+        const moved = await moveChat(moveChatId, newProject.id)
+        if (moved) {
+          destination = `/project/${newProject.id}/chat/${moved.id}`
+        }
+      } else {
+        try {
+          const chat = await createChat(newProject.id, "New Chat")
+          destination = `/project/${newProject.id}/chat/${chat.id}`
+        } catch {
+          // Project exists; land on the project hub if chat creation fails.
+        }
       }
       toast({
         type: "success",

@@ -21,6 +21,7 @@ import { useEffect, useRef, useState } from "react"
 import type { Project } from "@/types"
 import { BrandName } from "@/components/brand/BrandName"
 import { EmptyState } from "@/components/feedback/EmptyState"
+import { ChatMenu } from "@/components/chat/ChatMenu"
 import { ChatBubbleIcon } from "@/components/icons/ChatBubbleIcon"
 import { ProjectFolderIcon } from "@/components/icons/ProjectFolderIcon"
 import { useChats } from "@/context/ChatsContext"
@@ -31,12 +32,18 @@ type SidebarProps = {
   open: boolean
   onOpen: () => void
   onClose: () => void
+  /** Named projects only (no inbox). */
   projects?: Project[]
+  /** All projects including inbox — used to resolve personal chats. */
+  allProjects?: Project[]
   selectedProjectId?: string
   selectedChatId?: string
   onCreateProject?: () => void
   onRenameProject?: (id: string) => void
   onDeleteProject?: (id: string) => void
+  onRenameChat?: (chat: { id: string; title: string; projectId: string }) => void
+  onDeleteChat?: (chat: { id: string; title: string; projectId: string }) => void
+  onMoveChat?: (chat: { id: string; title: string; projectId: string }) => void
   onLogout?: () => void
   userName?: string
   userEmail?: string
@@ -59,11 +66,15 @@ export function Sidebar({
   onOpen,
   onClose,
   projects = [],
+  allProjects = [],
   selectedProjectId,
   selectedChatId,
   onCreateProject,
   onRenameProject,
   onDeleteProject,
+  onRenameChat,
+  onDeleteChat,
+  onMoveChat,
   onLogout,
   userName = "Your Name",
   userEmail,
@@ -72,6 +83,17 @@ export function Sidebar({
   const { toast } = useToast()
   const { getChatsForProject, createChat } = useChats()
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
+  /** Whole Projects accordion — closed by default. */
+  const [projectsOpen, setProjectsOpen] = useState(false)
+
+  const inboxProject =
+    allProjects.find((p) => p.isInbox) ??
+    projects.find((p) => p.isInbox)
+  const inboxChats = inboxProject
+    ? getChatsForProject(inboxProject.id)
+    : []
+  const inboxSelected =
+    !!inboxProject && selectedProjectId === inboxProject.id
 
   const comingSoon = (feature: string) => {
     toast({
@@ -81,16 +103,7 @@ export function Sidebar({
     })
   }
 
-  // Auto-expand the active project so its chats are visible
-  useEffect(() => {
-    if (!selectedProjectId) return
-    setExpandedIds((prev) => {
-      if (prev.has(selectedProjectId)) return prev
-      const next = new Set(prev)
-      next.add(selectedProjectId)
-      return next
-    })
-  }, [selectedProjectId])
+  // Projects stay collapsed by default — user expands via the chevron.
 
   const toggleExpand = (projectId: string, e: React.MouseEvent) => {
     e.preventDefault()
@@ -104,18 +117,20 @@ export function Sidebar({
   }
 
   const navigateTo = (href: string) => {
-    // Always navigate — even when already on a sibling chat/project route
     router.push(href)
-    // Close drawer on smaller screens after navigation; keep open on desktop
     if (typeof window !== "undefined" && window.innerWidth < 1024) {
       onClose()
     }
   }
 
+  const handleNewChatHome = (e?: React.MouseEvent) => {
+    e?.preventDefault()
+    navigateTo("/welcome")
+  }
+
   const handleOpenProject = (projectId: string, e?: React.MouseEvent) => {
     e?.preventDefault()
     e?.stopPropagation()
-    setExpandedIds((prev) => new Set(prev).add(projectId))
     navigateTo(`/project/${projectId}`)
   }
 
@@ -126,8 +141,14 @@ export function Sidebar({
   ) => {
     e?.preventDefault()
     e?.stopPropagation()
-    setExpandedIds((prev) => new Set(prev).add(projectId))
     navigateTo(`/project/${projectId}/chat/${chatId}`)
+  }
+
+  const handleCreateProject = (e?: React.MouseEvent) => {
+    e?.preventDefault()
+    e?.stopPropagation()
+    setProjectsOpen(true)
+    onCreateProject?.()
   }
 
   const handleNewChat = (projectId: string, e: React.MouseEvent) => {
@@ -136,6 +157,7 @@ export function Sidebar({
     void (async () => {
       try {
         const chat = await createChat(projectId, "New Chat")
+        setProjectsOpen(true)
         setExpandedIds((prev) => new Set(prev).add(projectId))
         navigateTo(`/project/${projectId}/chat/${chat.id}`)
       } catch {
@@ -175,7 +197,7 @@ export function Sidebar({
         </RailButton>
 
         <div className="mt-2 flex flex-col items-center gap-1">
-          <RailButton label="Create a new project" onClick={onCreateProject}>
+          <RailButton label="New chat" onClick={handleNewChatHome}>
             <SquarePen className="size-5" />
           </RailButton>
           <RailButton label="Search" onClick={() => comingSoon("Search")}>
@@ -234,132 +256,273 @@ export function Sidebar({
           <div className="p-3">
             <button
               type="button"
-              onClick={onCreateProject}
-              className="cursor-pointer flex w-full items-center justify-center gap-2 rounded-lg bg-blue-500 px-3 py-2.5 text-sm font-medium text-white transition-colors hover:bg-blue-600"
+              onClick={handleNewChatHome}
+              className="cursor-pointer flex w-full items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-sm font-medium text-gray-800 shadow-sm transition-colors hover:border-blue-200 hover:bg-blue-50/60 hover:text-blue-700"
             >
-              <Plus className="size-4" />
-              Create a new project
+              <SquarePen className="size-4 text-blue-500" />
+              New chat
             </button>
           </div>
 
           <section className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
-            <h2 className="mb-2 px-2 text-xs font-semibold uppercase tracking-wide text-gray-400">
-              Projects
+            <div className="group/projects mb-1 flex items-center gap-1 px-1">
+              <button
+                type="button"
+                onClick={() => setProjectsOpen((v) => !v)}
+                className="cursor-pointer flex min-w-0 flex-1 items-center gap-1 rounded-md px-1 py-1.5 text-left transition-colors hover:bg-gray-50"
+                aria-expanded={projectsOpen}
+                aria-controls="sidebar-projects-panel"
+              >
+                <ChevronRight
+                  className={cn(
+                    "size-3.5 shrink-0 text-gray-400 transition-transform duration-200",
+                    projectsOpen && "rotate-90"
+                  )}
+                />
+                <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-400">
+                  Projects
+                </h2>
+              </button>
+              <button
+                type="button"
+                onClick={handleCreateProject}
+                className="cursor-pointer inline-flex size-6 shrink-0 items-center justify-center rounded-md text-gray-400 opacity-100 transition-all hover:bg-blue-50 hover:text-blue-600 sm:opacity-0 sm:group-hover/projects:opacity-100 sm:focus-visible:opacity-100"
+                aria-label="Create a new project"
+                title="New project"
+              >
+                <Plus className="size-3.5" />
+              </button>
+            </div>
+
+            {projectsOpen && (
+              <div id="sidebar-projects-panel" className="mb-4">
+                {projects.length === 0 ? (
+                  <EmptyState
+                    icon={<ProjectFolderIcon className="size-8 text-gray-300" />}
+                    title="No projects yet"
+                    description="Tap + to create a project"
+                    className="py-4"
+                  />
+                ) : (
+                  <ul className="space-y-1">
+                    {projects.map((project) => {
+                      const isSelected = project.id === selectedProjectId
+                      const isExpanded = expandedIds.has(project.id)
+                      const projectChats = getChatsForProject(project.id)
+
+                      return (
+                        <li key={project.id}>
+                          <div
+                            className={cn(
+                              "group relative flex items-center rounded-lg transition-colors",
+                              isSelected && !selectedChatId
+                                ? "bg-blue-50"
+                                : "hover:bg-gray-50"
+                            )}
+                          >
+                            <button
+                              type="button"
+                              onClick={(e) => toggleExpand(project.id, e)}
+                              className="cursor-pointer flex size-8 shrink-0 items-center justify-center rounded-md text-gray-400 transition-colors hover:text-gray-700"
+                              aria-label={
+                                isExpanded ? "Collapse chats" : "Expand chats"
+                              }
+                              aria-expanded={isExpanded}
+                            >
+                              <ChevronRight
+                                className={cn(
+                                  "size-4 transition-transform duration-200",
+                                  isExpanded && "rotate-90"
+                                )}
+                              />
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={(e) => handleOpenProject(project.id, e)}
+                              className={cn(
+                                "cursor-pointer flex min-w-0 flex-1 items-center gap-2 py-2 pr-1 text-left text-sm",
+                                isSelected
+                                  ? "font-medium text-blue-600"
+                                  : "text-gray-800"
+                              )}
+                            >
+                              <ProjectFolderIcon
+                                className={cn(
+                                  "size-4 shrink-0",
+                                  isSelected ? "text-blue-600" : "text-blue-500"
+                                )}
+                              />
+                              <span className="truncate">{project.title}</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={(e) => handleNewChat(project.id, e)}
+                              className="cursor-pointer mr-0.5 inline-flex size-7 shrink-0 items-center justify-center rounded-md text-gray-400 opacity-0 transition-all hover:bg-gray-200 hover:text-gray-700 group-hover:opacity-100 focus:opacity-100"
+                              aria-label="New chat in project"
+                              title="New chat"
+                            >
+                              <SquarePen className="size-3.5" />
+                            </button>
+
+                            <ProjectMenu
+                              onRename={() => onRenameProject?.(project.id)}
+                              onDelete={() => onDeleteProject?.(project.id)}
+                            />
+                          </div>
+
+                          {isExpanded && (
+                            <ul className="ml-4 mt-0.5 max-h-48 space-y-0.5 overflow-y-auto border-l border-gray-100 pl-2">
+                              {projectChats.length === 0 ? (
+                                <li className="px-2 py-1.5 text-xs text-gray-400">
+                                  No chats yet
+                                </li>
+                              ) : (
+                                projectChats.map((chat) => {
+                                  const chatSelected = chat.id === selectedChatId
+                                  return (
+                                    <li key={chat.id}>
+                                      <div
+                                        className={cn(
+                                          "group/chat relative flex items-center rounded-md",
+                                          chatSelected
+                                            ? "bg-blue-50"
+                                            : "hover:bg-gray-50"
+                                        )}
+                                      >
+                                        <button
+                                          type="button"
+                                          onClick={(e) =>
+                                            handleOpenChat(
+                                              project.id,
+                                              chat.id,
+                                              e
+                                            )
+                                          }
+                                          className={cn(
+                                            "cursor-pointer flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-sm transition-colors",
+                                            chatSelected
+                                              ? "font-medium text-blue-600"
+                                              : "text-gray-600 hover:text-gray-900"
+                                          )}
+                                        >
+                                          <ChatBubbleIcon
+                                            className={cn(
+                                              "size-3.5 shrink-0",
+                                              chatSelected
+                                                ? "text-blue-500"
+                                                : "text-gray-400"
+                                            )}
+                                          />
+                                          <span className="truncate">
+                                            {chat.title}
+                                          </span>
+                                        </button>
+                                        <ChatMenu
+                                          onRename={() =>
+                                            onRenameChat?.({
+                                              id: chat.id,
+                                              title: chat.title,
+                                              projectId: project.id,
+                                            })
+                                          }
+                                          onMove={() =>
+                                            onMoveChat?.({
+                                              id: chat.id,
+                                              title: chat.title,
+                                              projectId: project.id,
+                                            })
+                                          }
+                                          onDelete={() =>
+                                            onDeleteChat?.({
+                                              id: chat.id,
+                                              title: chat.title,
+                                              projectId: project.id,
+                                            })
+                                          }
+                                          moveLabel="Move to project"
+                                        />
+                                      </div>
+                                    </li>
+                                  )
+                                })
+                              )}
+                            </ul>
+                          )}
+                        </li>
+                      )
+                    })}
+                  </ul>
+                )}
+              </div>
+            )}
+
+            <h2 className="mb-1.5 mt-1 px-2 text-xs font-semibold uppercase tracking-wide text-gray-400">
+              Chats
             </h2>
-
-            {projects.length === 0 ? (
-              <EmptyState
-                icon={<ProjectFolderIcon className="size-8 text-gray-300" />}
-                title="No projects yet"
-                description="Create your first project to get started"
-                className="py-8"
-              />
+            {inboxChats.length === 0 ? (
+              <p className="px-2 py-1 text-xs text-gray-400">
+                Start your first chat
+              </p>
             ) : (
-              <ul className="space-y-1">
-                {projects.map((project) => {
-                  const isSelected = project.id === selectedProjectId
-                  const isExpanded = expandedIds.has(project.id)
-                  const projectChats = getChatsForProject(project.id)
-
+              <ul className="space-y-0.5">
+                {inboxChats.map((chat) => {
+                  const chatSelected =
+                    inboxSelected && chat.id === selectedChatId
                   return (
-                    <li key={project.id}>
+                    <li key={chat.id}>
                       <div
                         className={cn(
-                          "group relative flex items-center rounded-lg transition-colors",
-                          isSelected && !selectedChatId
-                            ? "bg-blue-50"
-                            : "hover:bg-gray-50"
+                          "group/chat relative flex items-center rounded-lg",
+                          chatSelected ? "bg-blue-50" : "hover:bg-gray-50"
                         )}
                       >
                         <button
                           type="button"
-                          onClick={(e) => toggleExpand(project.id, e)}
-                          className="cursor-pointer flex size-8 shrink-0 items-center justify-center rounded-md text-gray-400 transition-colors hover:text-gray-700"
-                          aria-label={isExpanded ? "Collapse chats" : "Expand chats"}
-                          aria-expanded={isExpanded}
-                        >
-                          <ChevronRight
-                            className={cn(
-                              "size-4 transition-transform duration-200",
-                              isExpanded && "rotate-90"
-                            )}
-                          />
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={(e) => handleOpenProject(project.id, e)}
+                          onClick={(e) =>
+                            handleOpenChat(inboxProject!.id, chat.id, e)
+                          }
                           className={cn(
-                            "cursor-pointer flex min-w-0 flex-1 items-center gap-2 py-2 pr-1 text-left text-sm",
-                            isSelected
+                            "cursor-pointer flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-sm transition-colors",
+                            chatSelected
                               ? "font-medium text-blue-600"
-                              : "text-gray-800"
+                              : "text-gray-700 hover:text-gray-900"
                           )}
                         >
-                          <ProjectFolderIcon
+                          <ChatBubbleIcon
                             className={cn(
-                              "size-4 shrink-0",
-                              isSelected ? "text-blue-600" : "text-blue-500"
+                              "size-3.5 shrink-0",
+                              chatSelected ? "text-blue-500" : "text-gray-400"
                             )}
                           />
-                          <span className="truncate">{project.title}</span>
+                          <span className="truncate">{chat.title}</span>
                         </button>
-
-                        <button
-                          type="button"
-                          onClick={(e) => handleNewChat(project.id, e)}
-                          className="cursor-pointer mr-0.5 inline-flex size-7 shrink-0 items-center justify-center rounded-md text-gray-400 opacity-0 transition-all hover:bg-gray-200 hover:text-gray-700 group-hover:opacity-100 focus:opacity-100"
-                          aria-label="New chat in project"
-                          title="New chat"
-                        >
-                          <SquarePen className="size-3.5" />
-                        </button>
-
-                        <ProjectMenu
-                          onRename={() => onRenameProject?.(project.id)}
-                          onDelete={() => onDeleteProject?.(project.id)}
+                        <ChatMenu
+                          onRename={() =>
+                            onRenameChat?.({
+                              id: chat.id,
+                              title: chat.title,
+                              projectId: inboxProject!.id,
+                            })
+                          }
+                          onMove={() =>
+                            onMoveChat?.({
+                              id: chat.id,
+                              title: chat.title,
+                              projectId: inboxProject!.id,
+                            })
+                          }
+                          onDelete={() =>
+                            onDeleteChat?.({
+                              id: chat.id,
+                              title: chat.title,
+                              projectId: inboxProject!.id,
+                            })
+                          }
+                          moveLabel="Add to project"
                         />
                       </div>
-
-                      {isExpanded && (
-                        <ul className="ml-4 mt-0.5 max-h-48 space-y-0.5 overflow-y-auto border-l border-gray-100 pl-2">
-                          {projectChats.length === 0 ? (
-                            <li className="px-2 py-1.5 text-xs text-gray-400">
-                              No chats yet
-                            </li>
-                          ) : (
-                            projectChats.map((chat) => {
-                              const chatSelected = chat.id === selectedChatId
-                              return (
-                                <li key={chat.id}>
-                                  <button
-                                    type="button"
-                                    onClick={(e) =>
-                                      handleOpenChat(project.id, chat.id, e)
-                                    }
-                                    className={cn(
-                                      "cursor-pointer flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
-                                      chatSelected
-                                        ? "bg-blue-50 font-medium text-blue-600"
-                                        : "text-gray-600 hover:bg-gray-50 hover:text-gray-900"
-                                    )}
-                                  >
-                                    <ChatBubbleIcon
-                                      className={cn(
-                                        "size-3.5 shrink-0",
-                                        chatSelected
-                                          ? "text-blue-500"
-                                          : "text-gray-400"
-                                      )}
-                                    />
-                                    <span className="truncate">{chat.title}</span>
-                                  </button>
-                                </li>
-                              )
-                            })
-                          )}
-                        </ul>
-                      )}
                     </li>
                   )
                 })}
