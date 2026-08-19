@@ -14,6 +14,18 @@ export const authApi = {
     return api.post<AuthTokenResponse>("/auth/login", input, { skipAuth: true })
   },
 
+  oauthLogin(input: {
+    email: string
+    name: string
+    provider?: string
+    provider_id?: string
+    profile_picture?: string
+  }) {
+    return api.post<
+      AuthTokenResponse & { is_new_user?: boolean }
+    >("/auth/oauth-login", input, { skipAuth: true })
+  },
+
   refresh() {
     return api.post<AccessTokenResponse>("/auth/refresh", undefined, {
       skipAuth: true,

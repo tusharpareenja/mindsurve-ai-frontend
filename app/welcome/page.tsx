@@ -466,7 +466,7 @@ function WelcomeMain({ userName }: { userName: string }) {
           is_background: u.isBackground ?? false,
           layer_order: typeof u.layerOrder === "number" ? u.layerOrder : null,
         }))
-        await studyBriefApi.aiTurn(chatId, messageContent, attachments)
+        await studyBriefApi.stageTurn(chatId, messageContent, attachments)
         void generateChatTitle(titleSeed).then(async (title) => {
           try {
             await renameChat(chatId, title)

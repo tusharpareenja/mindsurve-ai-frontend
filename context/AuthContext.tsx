@@ -27,6 +27,13 @@ type AuthContextValue = {
   accessToken: string | null
   login: (email: string, password: string) => Promise<AuthResult>
   register: (name: string, email: string, password: string) => Promise<AuthResult>
+  loginWithOAuth: (input: {
+    email: string
+    name: string
+    provider?: string
+    provider_id?: string
+    profile_picture?: string
+  }) => Promise<AuthResult>
   logout: () => Promise<void>
 }
 
@@ -138,6 +145,37 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [setAccessToken]
   )
 
+  const loginWithOAuth = useCallback(
+    async (input: {
+      email: string
+      name: string
+      provider?: string
+      provider_id?: string
+      profile_picture?: string
+    }): Promise<AuthResult> => {
+      try {
+        const data = await authApi.oauthLogin({
+          email: input.email.trim(),
+          name: input.name.trim(),
+          provider: input.provider || "google",
+          provider_id: input.provider_id,
+          profile_picture: input.profile_picture,
+        })
+        setAccessToken(data.access_token)
+        setUser(toUser(data.user))
+        setStatus("AUTHENTICATED")
+        return { ok: true }
+      } catch (err) {
+        clearAuth()
+        return {
+          ok: false,
+          error: errorMessage(err, "Google sign-in failed. Please try again."),
+        }
+      }
+    },
+    [clearAuth, setAccessToken]
+  )
+
   const logout = useCallback(async () => {
     try {
       await authApi.logout()
@@ -157,9 +195,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       accessToken,
       login,
       register,
+      loginWithOAuth,
       logout,
     }),
-    [user, status, accessToken, login, register, logout]
+    [user, status, accessToken, login, register, loginWithOAuth, logout]
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
