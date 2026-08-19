@@ -487,8 +487,9 @@ function WelcomeMain({ userName }: { userName: string }) {
       setDraft("")
       draftChatRef.current = null
 
-      await Promise.all([refreshProjects(), refreshChats()])
+      // Navigate immediately — sidebar refresh can finish in the background.
       router.push(`/project/${projectId}/chat/${chatId}`)
+      void Promise.all([refreshProjects(), refreshChats()])
     } catch (err) {
       toast({
         type: "error",

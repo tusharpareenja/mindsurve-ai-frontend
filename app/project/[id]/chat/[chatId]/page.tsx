@@ -386,10 +386,19 @@ function ChatPageInner() {
         stickToBottomRef.current = true
 
         const last = msgs[msgs.length - 1]
-        if (last?.role === "user" && briefOut.phase !== "created") {
+        const needsContinue =
+          last?.role === "user" && briefOut.phase !== "created"
+
+        // Show the chat shell immediately — don't block the page on OpenAI.
+        if (needsContinue) {
           setThinkingLive("")
           setThoughtsStreamDone(false)
           setThinking(true)
+        }
+        setReady(true)
+        requestAnimationFrame(() => scrollToBottom(false))
+
+        if (needsContinue && last) {
           const thinkAbort = new AbortController()
           thinkAbortRef.current = thinkAbort
           void studyBriefApi
@@ -419,9 +428,21 @@ function ChatPageInner() {
               if (mapped.suggestedChatTitle) {
                 void renameChat(chatId, mapped.suggestedChatTitle)
               }
+            } else if (!cancelled) {
+              toast({
+                type: "error",
+                title: "Couldn't get a reply",
+                description: "Please try sending your message again.",
+              })
             }
           } catch {
-            // Non-fatal
+            if (!cancelled) {
+              toast({
+                type: "error",
+                title: "Couldn't get a reply",
+                description: "Please try sending your message again.",
+              })
+            }
           } finally {
             thinkAbort.abort()
             thinkAbortRef.current = null
@@ -431,9 +452,6 @@ function ChatPageInner() {
             }
           }
         }
-
-        setReady(true)
-        requestAnimationFrame(() => scrollToBottom(false))
       } catch {
         if (!cancelled) {
           toast({
