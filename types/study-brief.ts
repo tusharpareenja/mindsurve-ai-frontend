@@ -1,4 +1,4 @@
-export type MindGenomicStudyType = "grid" | "text"
+export type MindGenomicStudyType = "grid" | "text" | "layer"
 
 export type BriefPhase = "gathering" | "brief_ready" | "creating" | "created"
 
@@ -15,6 +15,10 @@ export const MIN_TEXT_CATEGORIES = 3
 export const MAX_TEXT_CATEGORIES = 20
 export const MIN_TEXT_STATEMENTS = 3
 export const MAX_TEXT_STATEMENTS = 20
+export const MIN_LAYER_LAYERS = 3
+export const MAX_LAYER_LAYERS = 15
+export const MIN_LAYER_ELEMENTS = 3
+export const MAX_LAYER_ELEMENTS = 30
 
 export type ElementBrief = {
   name: string
@@ -26,6 +30,28 @@ export type ElementBrief = {
 export type CategoryBrief = {
   name: string
   elements: ElementBrief[]
+}
+
+export type LayerTransformBrief = {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+export type LayerElementBrief = {
+  name: string
+  content: string
+  order: number
+  transform: LayerTransformBrief
+}
+
+export type LayerBrief = {
+  name: string
+  z_index: number
+  order: number
+  elements: LayerElementBrief[]
+  transform: LayerTransformBrief
 }
 
 export type ClassificationQuestionBrief = {
@@ -42,6 +68,8 @@ export type AttachmentBrief = {
   category?: string | null
   relative_path?: string | null
   extracted_text?: string | null
+  is_background?: boolean | null
+  layer_order?: number | null
 }
 
 export const AGE_SEGMENTS = [
@@ -73,6 +101,8 @@ export type StudyBrief = {
   orientation_text: string
   rating_scale: RatingScaleBrief
   categories: CategoryBrief[]
+  layers: LayerBrief[]
+  background_image_url: string | null
   classification_questions: ClassificationQuestionBrief[]
   audience: AudienceBrief
   attachments: AttachmentBrief[]

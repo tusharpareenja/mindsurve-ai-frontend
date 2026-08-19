@@ -1,13 +1,14 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
-import { FolderInput, MoreHorizontal, Pencil, Trash2 } from "lucide-react"
+import { FolderInput, MoreHorizontal, Pencil, Trash2, UserPlus } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 type ChatMenuProps = {
   onRename: () => void
   onMove: () => void
   onDelete: () => void
+  onAddCollaborator?: () => void
   moveLabel?: string
   className?: string
 }
@@ -16,6 +17,7 @@ export function ChatMenu({
   onRename,
   onMove,
   onDelete,
+  onAddCollaborator,
   moveLabel = "Add to project",
   className,
 }: ChatMenuProps) {
@@ -51,7 +53,7 @@ export function ChatMenu({
       </button>
 
       {open && (
-        <div className="absolute right-0 top-8 z-50 w-44 rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
+        <div className="absolute right-0 top-8 z-50 w-48 rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
           <button
             type="button"
             className="cursor-pointer flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-800 hover:bg-gray-50"
@@ -74,6 +76,19 @@ export function ChatMenu({
             <FolderInput className="size-3.5 text-gray-500" />
             {moveLabel}
           </button>
+          {onAddCollaborator && (
+            <button
+              type="button"
+              className="cursor-pointer flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-800 hover:bg-gray-50"
+              onClick={() => {
+                setOpen(false)
+                onAddCollaborator()
+              }}
+            >
+              <UserPlus className="size-3.5 text-gray-500" />
+              Add collaborator
+            </button>
+          )}
           <button
             type="button"
             className="cursor-pointer flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-red-600 hover:bg-red-50"

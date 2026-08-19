@@ -19,6 +19,7 @@ import {
   FileText,
   Check,
   AlertCircle,
+  Layers,
 } from "lucide-react"
 import Link from "next/link"
 import ReactMarkdown from "react-markdown"
@@ -50,10 +51,13 @@ import { mapAiTurn, studyBriefApi } from "@/lib/api/studyBrief"
 import { taskGenerationApi } from "@/lib/api/taskGeneration"
 import {
   displayNameForUpload,
+  filesFromClipboard,
+  filesFromDataTransfer,
   mapPool,
   parseUploadSelection,
   type UploadItem,
 } from "@/lib/chat-uploads"
+import { cn } from "@/lib/utils"
 import type { ChatMessage } from "@/types"
 import type {
   AttachmentBrief,
@@ -62,7 +66,6 @@ import type {
   StudyBrief,
 } from "@/types/study-brief"
 
-const MAX_ATTACHMENTS = 40
 const UPLOAD_CONCURRENCY = 4
 const PANEL_STORAGE_KEY = "mindsurve.study-panel-width"
 const PANEL_DEFAULT = 640
@@ -141,7 +144,9 @@ function ChatPageInner() {
   const [brief, setBrief] = useState<StudyBrief | null>(null)
   const [phase, setPhase] = useState<BriefPhase>("gathering")
   const [uploads, setUploads] = useState<UploadItem[]>([])
+  const [layerStudyEnabled, setLayerStudyEnabled] = useState(false)
   const [attachMenuOpen, setAttachMenuOpen] = useState(false)
+  const [dragActive, setDragActive] = useState(false)
   const [ready, setReady] = useState(false)
   const [hasMoreMessages, setHasMoreMessages] = useState(false)
   const [nextBefore, setNextBefore] = useState<string | undefined>()
@@ -284,6 +289,12 @@ function ChatPageInner() {
   useEffect(() => {
     if (showBriefCard) setArtifactOpen(true)
   }, [showBriefCard])
+
+  useEffect(() => {
+    if (brief?.study_type === "layer") {
+      setLayerStudyEnabled(true)
+    }
+  }, [brief?.study_type])
 
   const openStudyPanel = useCallback(() => setArtifactOpen(true), [])
   const closeStudyPanel = useCallback(() => setArtifactOpen(false), [])
@@ -572,6 +583,8 @@ function ChatPageInner() {
         const uploaded = await studyBriefApi.upload(chatId, item.file, {
           category: item.category,
           relativePath: item.relativePath,
+          isBackground: item.isBackground,
+          layerOrder: item.layerOrder,
         })
         const extracted = uploaded.extracted_text ?? null
         const looksLikeDocument =
@@ -629,7 +642,7 @@ function ChatPageInner() {
   const startUploads = useCallback(
     async (incoming: UploadItem[]) => {
       if (!incoming.length) return
-      setUploads((prev) => [...prev, ...incoming].slice(0, MAX_ATTACHMENTS))
+      setUploads((prev) => [...prev, ...incoming])
       await mapPool(incoming, UPLOAD_CONCURRENCY, (item) => uploadOne(item))
     },
     [uploadOne]
@@ -650,10 +663,12 @@ function ChatPageInner() {
     )
   }, [uploads, uploadOne])
 
-  const handlePickFiles = (files: FileList | null) => {
-    if (!files?.length) return
+  const handlePickFiles = (files: FileList | File[] | null) => {
+    if (!files || (Array.isArray(files) ? !files.length : !files.length)) return
     setAttachMenuOpen(false)
-    const parsed = parseUploadSelection(files)
+    const parsed = parseUploadSelection(files, {
+      layerStudy: layerStudyEnabled ? true : undefined,
+    })
 
     if (parsed.emptyCategories.length) {
       toast({
@@ -673,7 +688,22 @@ function ChatPageInner() {
       })
       return
     }
-    if (parsed.skippedUnsupported > 0) {
+    if (parsed.detectedLayerStudy) {
+      setLayerStudyEnabled(true)
+      toast({
+        type: "info",
+        title: "Layer study folder detected",
+        description: `Background + ${parsed.layerCount} layer${parsed.layerCount === 1 ? "" : "s"} — uploading now.`,
+      })
+    }
+    for (const warning of parsed.warnings) {
+      toast({
+        type: "warning",
+        title: "Folder import note",
+        description: warning,
+      })
+    }
+    if (parsed.skippedUnsupported > 0 && !parsed.detectedLayerStudy) {
       toast({
         type: "info",
         title: "Some files skipped",
@@ -681,19 +711,44 @@ function ChatPageInner() {
       })
     }
 
-    const room = Math.max(0, MAX_ATTACHMENTS - uploads.length)
-    const next: UploadItem[] = parsed.items.slice(0, room).map((item) => ({
+    const next: UploadItem[] = parsed.items.map((item) => ({
       ...item,
       status: "uploading" as const,
     }))
-    if (parsed.items.length > room) {
+    void startUploads(next)
+  }
+
+  const handlePasteFiles = (event: React.ClipboardEvent) => {
+    if (sending || thinking || confirming) return
+    const files = filesFromClipboard(event.clipboardData)
+    if (!files.length) return
+    event.preventDefault()
+    handlePickFiles(files)
+  }
+
+  const handleDropFiles = async (event: React.DragEvent) => {
+    event.preventDefault()
+    event.stopPropagation()
+    setDragActive(false)
+    if (sending || thinking || confirming) return
+    try {
+      const files = await filesFromDataTransfer(event.dataTransfer)
+      if (!files.length) {
+        toast({
+          type: "warning",
+          title: "Nothing to upload",
+          description: "Drop images, a PDF/Word file, or a folder of images.",
+        })
+        return
+      }
+      handlePickFiles(files)
+    } catch {
       toast({
-        type: "warning",
-        title: "Attachment limit",
-        description: `Only the first ${MAX_ATTACHMENTS} files were kept.`,
+        type: "error",
+        title: "Couldn't read dropped files",
+        description: "Please try again or use the + menu.",
       })
     }
-    void startUploads(next)
   }
 
   const removeUpload = (id: string) => {
@@ -735,18 +790,20 @@ function ChatPageInner() {
       category: u.category ?? null,
       relative_path: u.relativePath ?? null,
       extracted_text: u.extractedText ?? null,
+      is_background: u.isBackground ?? false,
+      layer_order: typeof u.layerOrder === "number" ? u.layerOrder : null,
     }))
+
+    const sendContent =
+      content ||
+      (attachments.length ? `Uploaded ${attachments.length} file(s)` : "")
 
     const tempId = `temp-${Date.now()}`
     const optimistic: ChatMessage = {
       id: tempId,
       chatId,
       role: "user",
-      content:
-        content ||
-        (attachments.length
-          ? `Uploaded ${attachments.length} file(s)`
-          : ""),
+      content: sendContent,
       createdAt: new Date(),
       metadata: attachments.length
         ? { kind: "attachments", attachments }
@@ -765,7 +822,7 @@ function ChatPageInner() {
     void studyBriefApi
       .streamThoughts(
         chatId,
-        content,
+        sendContent,
         attachments,
         setThinkingLive,
         thinkAbort.signal
@@ -784,7 +841,7 @@ function ChatPageInner() {
     const isFirstMessage = localMessages.length === 0
 
     try {
-      const dto = await studyBriefApi.aiTurn(chatId, content, attachments)
+      const dto = await studyBriefApi.aiTurn(chatId, sendContent, attachments)
       const mapped = mapAiTurn(dto)
       setLocalMessages((prev) => {
         const withoutTemp = prev.filter((m) => m.id !== tempId)
@@ -1549,12 +1606,40 @@ function ChatPageInner() {
             className="mx-auto max-w-3xl"
           >
             <div
-              className={`rounded-[28px] border bg-white/95 shadow-sm backdrop-blur-md ${
+              className={`relative rounded-[28px] border bg-white/95 shadow-sm backdrop-blur-md ${
                 speech.listening
                   ? "border-red-200 ring-2 ring-red-100"
-                  : "border-blue-100/90"
+                  : dragActive
+                    ? "border-blue-400 ring-2 ring-blue-100"
+                    : "border-blue-100/90"
               } ${chatLocked ? "opacity-60" : ""}`}
+              onDragEnter={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+                if (!chatLocked && !sending && !thinking) setDragActive(true)
+              }}
+              onDragOver={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+                if (!chatLocked && !sending && !thinking) setDragActive(true)
+              }}
+              onDragLeave={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+                if (e.currentTarget.contains(e.relatedTarget as Node)) return
+                setDragActive(false)
+              }}
+              onDrop={(e) => {
+                void handleDropFiles(e)
+              }}
             >
+              {dragActive && (
+                <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-[28px] bg-blue-50/90">
+                  <p className="text-sm font-medium text-blue-700">
+                    Drop images, PDF/Word, or a folder to upload
+                  </p>
+                </div>
+              )}
               {uploads.length > 0 && (
                 <div className="border-b border-gray-100 px-2.5 pt-2.5 sm:px-3 sm:pt-3">
                   <div className="mb-1.5 flex items-center justify-between gap-2">
@@ -1651,11 +1736,34 @@ function ChatPageInner() {
                 placeholder={composerPlaceholder}
                 rows={1}
                 disabled={sending || thinking || chatLocked}
+                onPaste={handlePasteFiles}
                 className="max-h-48 min-h-[56px] w-full resize-none overflow-y-auto border-0 bg-transparent px-4 pt-3.5 text-[15px] leading-6 text-gray-900 outline-none placeholder:text-gray-400 disabled:cursor-not-allowed"
               />
 
               <div className="flex items-center justify-between gap-2 px-2 pb-2 pt-1">
-                <div className="relative">
+                <div className="flex min-w-0 items-center gap-1.5">
+                  <button
+                    type="button"
+                    disabled={chatLocked || sending || thinking}
+                    onClick={() => setLayerStudyEnabled((on) => !on)}
+                    className={cn(
+                      "inline-flex cursor-pointer items-center gap-1.5 rounded-full px-2.5 py-1.5 text-[11px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50",
+                      layerStudyEnabled
+                        ? "bg-blue-500 text-white shadow-sm shadow-blue-500/25"
+                        : "bg-gray-100 text-gray-600 hover:bg-gray-200 hover:text-gray-800"
+                    )}
+                    aria-pressed={layerStudyEnabled}
+                    title={
+                      layerStudyEnabled
+                        ? "Layer study on — folder uploads map to background + layers"
+                        : "Turn on for a layer study (background + layer folders)"
+                    }
+                  >
+                    <Layers className="size-3.5" />
+                    <span className="hidden sm:inline">Layer study</span>
+                    <span className="sm:hidden">Layer</span>
+                  </button>
+                  <div className="relative">
                   <input
                     ref={fileInputRef}
                     type="file"
@@ -1725,6 +1833,7 @@ function ChatPageInner() {
                       </button>
                     </div>
                   )}
+                  </div>
                 </div>
 
                 <div className="flex items-center gap-1">
@@ -1759,8 +1868,8 @@ function ChatPageInner() {
               </div>
             </div>
             <p className="mt-1.5 text-center text-[11px] text-gray-400">
-              Enter to send · Shift+Enter for a new line · Mic to dictate ·
-              Folder upload uses subfolders as categories
+              Enter to send · Shift+Enter for a new line · Paste or drag & drop files ·
+              Tap Layer study for layered packs
             </p>
           </form>
         </div>

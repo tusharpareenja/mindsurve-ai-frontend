@@ -39,6 +39,8 @@ function briefEditFingerprint(source: StudyBrief): string {
     orientation_text: source.orientation_text,
     study_type: source.study_type,
     categories: source.categories,
+    layers: source.layers,
+    background_image_url: source.background_image_url,
     classification_questions: source.classification_questions,
     audience: source.audience,
     status: source.status,
@@ -184,6 +186,12 @@ export function StudyBriefCard({
       c.elements.some((e) => e.element_type === "image" && !e.content?.trim())
     )
   const isTextStudy = brief.study_type === "text"
+  const isLayerStudy = brief.study_type === "layer"
+  const layerCount = (brief.layers || []).length
+  const layerElementCount = (brief.layers || []).reduce(
+    (n, layer) => n + layer.elements.length,
+    0
+  )
   const textStructureValid =
     !isTextStudy ||
     (categories.length >= MIN_TEXT_CATEGORIES &&
@@ -370,10 +378,13 @@ export function StudyBriefCard({
               ? "Grid"
               : shown.study_type === "text"
                 ? "Text"
-                : "Pending"}{" "}
-            · {shown.categories.length} cats ·{" "}
-            {shown.categories.reduce((n, c) => n + c.elements.length, 0)}{" "}
-            {shown.study_type === "text" ? "statements" : "elements"}
+                : shown.study_type === "layer"
+                  ? "Layer"
+                  : "Pending"}{" "}
+            ·{" "}
+            {shown.study_type === "layer"
+              ? `${(shown.layers || []).length} layers · ${(shown.layers || []).reduce((n, l) => n + l.elements.length, 0)} elements`
+              : `${shown.categories.length} cats · ${shown.categories.reduce((n, c) => n + c.elements.length, 0)} ${shown.study_type === "text" ? "statements" : "elements"}`}
             {shown.classification_questions.length > 0
               ? ` · ${shown.classification_questions.length} Qs`
               : ""}
@@ -491,9 +502,11 @@ export function StudyBriefCard({
               <div className="space-y-2">
                 <div className="flex items-center justify-between gap-2">
                   <Label>
-                    {isTextStudy
-                      ? "Categories & statements"
-                      : "Categories & elements"}
+                    {isLayerStudy
+                      ? "Layers & elements"
+                      : isTextStudy
+                        ? "Categories & statements"
+                        : "Categories & elements"}
                   </Label>
                   {isTextStudy && categories.length < MAX_TEXT_CATEGORIES && (
                     <button
@@ -533,6 +546,61 @@ export function StudyBriefCard({
                     </button>
                   )}
                 </div>
+                {isLayerStudy ? (
+                  <div className="space-y-2">
+                    {brief.background_image_url ? (
+                      <div className="rounded-lg border border-gray-200 p-2.5">
+                        <p className="text-[11px] font-medium text-gray-500">
+                          Background
+                        </p>
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={brief.background_image_url}
+                          alt="Background"
+                          className="mt-1.5 max-h-28 w-full rounded object-contain bg-gray-50"
+                        />
+                      </div>
+                    ) : null}
+                    {(brief.layers || []).map((layer) => (
+                      <div
+                        key={`${layer.name}-${layer.z_index}`}
+                        className="rounded-lg border border-gray-200 p-2.5"
+                      >
+                        <p className="text-xs font-semibold text-gray-800">
+                          {layer.name}{" "}
+                          <span className="font-normal text-gray-400">
+                            · z-{layer.z_index}
+                          </span>
+                        </p>
+                        <div className="mt-1.5 flex flex-wrap gap-1.5">
+                          {layer.elements.map((el) => (
+                            <div
+                              key={`${layer.name}-${el.name}-${el.content}`}
+                              className="inline-flex max-w-full items-center gap-1.5 rounded-md bg-gray-50 px-1.5 py-1"
+                            >
+                              {el.content ? (
+                                // eslint-disable-next-line @next/next/no-img-element
+                                <img
+                                  src={el.content}
+                                  alt={el.name}
+                                  className="size-7 shrink-0 rounded object-cover"
+                                />
+                              ) : null}
+                              <span className="truncate text-[11px] text-gray-700">
+                                {el.name}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                    <p className="text-[10px] text-gray-500">
+                      Re-upload a root folder to replace layers. Folder order sets
+                      z-index automatically.
+                    </p>
+                  </div>
+                ) : (
+                  <>
                 {isTextStudy && (
                   <p className="text-[10px] text-gray-500">
                     Min {MIN_TEXT_CATEGORIES} categories, max{" "}
@@ -765,6 +833,8 @@ export function StudyBriefCard({
                     ? "Paste statements in chat or upload a PDF / Word file and the AI will use them. You can edit freely here."
                     : "To replace images, paste a new image URL (re-upload via chat if needed)."}
                 </p>
+                  </>
+                )}
               </div>
               <div className="space-y-2">
                 <div className="flex items-center justify-between gap-2">
@@ -1052,9 +1122,61 @@ export function StudyBriefCard({
                 <p className="text-[11px] font-medium text-gray-500">
                   {shown.study_type === "text"
                     ? "Categories & statements"
-                    : "Categories & elements"}
+                    : shown.study_type === "layer"
+                      ? "Layers & elements"
+                      : "Categories & elements"}
                 </p>
-                {shown.categories.map((cat) => (
+                {shown.study_type === "layer" ? (
+                  <>
+                    {shown.background_image_url ? (
+                      <div className="rounded-lg border border-gray-100 px-2.5 py-2">
+                        <p className="text-[11px] font-medium text-gray-500">
+                          Background
+                        </p>
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={shown.background_image_url}
+                          alt="Background"
+                          className="mt-1.5 max-h-24 w-full rounded object-contain bg-gray-50"
+                        />
+                      </div>
+                    ) : null}
+                    {(shown.layers || []).map((layer) => (
+                      <div
+                        key={`${layer.name}-${layer.z_index}`}
+                        className="rounded-lg border border-gray-100 px-2.5 py-2"
+                      >
+                        <p className="text-xs font-semibold text-gray-800">
+                          {layer.name}{" "}
+                          <span className="font-normal text-gray-400">
+                            · z-{layer.z_index}
+                          </span>
+                        </p>
+                        <div className="mt-1.5 flex flex-wrap gap-1.5">
+                          {layer.elements.map((el) => (
+                            <div
+                              key={`${layer.name}-${el.name}-${el.content}`}
+                              className="inline-flex max-w-full items-center gap-1.5 rounded-md bg-gray-50 px-1.5 py-1"
+                            >
+                              {el.content ? (
+                                // eslint-disable-next-line @next/next/no-img-element
+                                <img
+                                  src={el.content}
+                                  alt={el.name}
+                                  className="size-7 shrink-0 rounded object-cover"
+                                />
+                              ) : null}
+                              <span className="truncate text-[11px] text-gray-700">
+                                {el.name}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </>
+                ) : (
+                  shown.categories.map((cat) => (
                   <div
                     key={cat.name}
                     className="rounded-lg border border-gray-100 px-2.5 py-2"
@@ -1094,7 +1216,8 @@ export function StudyBriefCard({
                       </div>
                     )}
                   </div>
-                ))}
+                  ))
+                )}
               </div>
               <div>
                 <p className="mb-1 text-[11px] font-medium text-gray-500">

@@ -10,6 +10,7 @@ import {
   FolderOpen,
   ImageIcon,
   ImagePlus,
+  Layers,
   Loader2,
   Paperclip,
   Plus,
@@ -32,6 +33,8 @@ import { studyBriefApi } from "@/lib/api/studyBrief"
 import { generateChatTitle } from "@/lib/chat-title"
 import {
   displayNameForUpload,
+  filesFromClipboard,
+  filesFromDataTransfer,
   mapPool,
   parseUploadSelection,
   type UploadItem,
@@ -39,7 +42,6 @@ import {
 import type { AttachmentBrief } from "@/types/study-brief"
 import { cn } from "@/lib/utils"
 
-const MAX_ATTACHMENTS = 40
 const UPLOAD_CONCURRENCY = 4
 
 const SUGGESTIONS = [
@@ -111,19 +113,28 @@ function WelcomeMain({ userName }: { userName: string }) {
   const [draft, setDraft] = useState("")
   const [sending, setSending] = useState(false)
   const [uploads, setUploads] = useState<UploadItem[]>([])
+  const [layerStudyEnabled, setLayerStudyEnabled] = useState(false)
   const [attachMenuOpen, setAttachMenuOpen] = useState(false)
+  const [dragActive, setDragActive] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const docInputRef = useRef<HTMLInputElement>(null)
   const folderInputRef = useRef<HTMLInputElement>(null)
   const attachMenuRef = useRef<HTMLDivElement>(null)
   const sendingLock = useRef(false)
+  const draftChatRef = useRef<{ chatId: string; projectId: string } | null>(
+    null
+  )
+  const draftChatPromiseRef = useRef<Promise<{
+    chatId: string
+    projectId: string
+  }> | null>(null)
 
-  const selectedUploads = uploads.filter((u) => u.status === "ready" && !u.url)
+  const readyUploads = uploads.filter((u) => u.status === "ready" && u.url)
   const uploadsBusy = uploads.some((u) => u.status === "uploading")
   const hasUploadErrors = uploads.some((u) => u.status === "error")
   const canSend =
-    (draft.trim().length > 0 || selectedUploads.length > 0) &&
+    (draft.trim().length > 0 || readyUploads.length > 0) &&
     !sending &&
     !uploadsBusy &&
     !hasUploadErrors
@@ -185,11 +196,140 @@ function WelcomeMain({ userName }: { userName: string }) {
     })
   }, [])
 
+  const ensureDraftChat = useCallback(async () => {
+    if (draftChatRef.current) return draftChatRef.current
+    if (draftChatPromiseRef.current) return draftChatPromiseRef.current
+
+    draftChatPromiseRef.current = (async () => {
+      const inbox = await ensureInbox()
+      const chat = await createChat(inbox.id)
+      const ref = { chatId: chat.id, projectId: chat.projectId }
+      draftChatRef.current = ref
+      return ref
+    })()
+
+    try {
+      return await draftChatPromiseRef.current
+    } finally {
+      draftChatPromiseRef.current = null
+    }
+  }, [createChat, ensureInbox])
+
+  const uploadOne = useCallback(
+    async (chatId: string, item: UploadItem) => {
+      try {
+        if (item.file.size > 25 * 1024 * 1024) {
+          throw new Error("File exceeds 25 MB")
+        }
+        const uploaded = await studyBriefApi.upload(chatId, item.file, {
+          category: item.category,
+          relativePath: item.relativePath,
+          isBackground: item.isBackground,
+          layerOrder: item.layerOrder,
+        })
+        const extracted = uploaded.extracted_text ?? null
+        const looksLikeDocument =
+          /\.(pdf|docx|doc|txt|csv|md)$/i.test(item.file.name) ||
+          (uploaded.content_type || "").includes("pdf") ||
+          (uploaded.content_type || "").includes("word")
+        if (looksLikeDocument && !(extracted && extracted.trim())) {
+          toast({
+            type: "warning",
+            title: "Couldn't read document text",
+            description: `We uploaded ${item.file.name}, but couldn't extract its text.`,
+          })
+        }
+        setUploads((prev) =>
+          prev.map((u) =>
+            u.id === item.id
+              ? {
+                  ...u,
+                  status: "ready",
+                  url: uploaded.url,
+                  contentType: uploaded.content_type,
+                  extractedText: extracted,
+                  error: undefined,
+                }
+              : u
+          )
+        )
+      } catch (err) {
+        setUploads((prev) =>
+          prev.map((u) =>
+            u.id === item.id
+              ? {
+                  ...u,
+                  status: "error",
+                  error:
+                    err instanceof ApiError
+                      ? err.message
+                      : err instanceof Error
+                        ? err.message
+                        : "Upload failed",
+                }
+              : u
+          )
+        )
+      }
+    },
+    [toast]
+  )
+
+  const startUploads = useCallback(
+    async (incoming: UploadItem[]) => {
+      if (!incoming.length) return
+      setUploads((prev) => [...prev, ...incoming])
+      try {
+        const { chatId } = await ensureDraftChat()
+        await mapPool(incoming, UPLOAD_CONCURRENCY, (item) =>
+          uploadOne(chatId, item)
+        )
+      } catch (err) {
+        toast({
+          type: "error",
+          title: "Couldn't start uploads",
+          description:
+            err instanceof ApiError ? err.message : "Please try again.",
+        })
+        setUploads((prev) =>
+          prev.map((u) =>
+            incoming.some((i) => i.id === u.id) && u.status === "uploading"
+              ? { ...u, status: "error", error: "Upload failed" }
+              : u
+          )
+        )
+      }
+    },
+    [ensureDraftChat, toast, uploadOne]
+  )
+
+  const retryFailedUploads = useCallback(async () => {
+    const failed = uploads.filter((u) => u.status === "error")
+    if (!failed.length) return
+    setUploads((prev) =>
+      prev.map((u) =>
+        u.status === "error"
+          ? { ...u, status: "uploading", error: undefined }
+          : u
+      )
+    )
+    try {
+      const { chatId } = await ensureDraftChat()
+      await mapPool(failed, UPLOAD_CONCURRENCY, (item) =>
+        uploadOne(chatId, { ...item, status: "uploading" })
+      )
+    } catch {
+      /* uploadOne sets per-file errors */
+    }
+  }, [ensureDraftChat, uploadOne, uploads])
+
   const handlePickFiles = useCallback(
-    (files: FileList | null) => {
-      if (!files?.length) return
+    (files: FileList | File[] | null) => {
+      if (!files || (Array.isArray(files) ? !files.length : !files.length)) return
       setAttachMenuOpen(false)
-      const parsed = parseUploadSelection(files)
+      const parsed = parseUploadSelection(files, {
+        layerStudy: layerStudyEnabled ? true : undefined,
+      })
 
       if (parsed.emptyCategories.length) {
         toast({
@@ -209,7 +349,22 @@ function WelcomeMain({ userName }: { userName: string }) {
         })
         return
       }
-      if (parsed.skippedUnsupported > 0) {
+      if (parsed.detectedLayerStudy) {
+        setLayerStudyEnabled(true)
+        toast({
+          type: "info",
+          title: "Layer study folder detected",
+          description: `Background + ${parsed.layerCount} layer${parsed.layerCount === 1 ? "" : "s"} — uploading now.`,
+        })
+      }
+      for (const warning of parsed.warnings) {
+        toast({
+          type: "warning",
+          title: "Folder import note",
+          description: warning,
+        })
+      }
+      if (parsed.skippedUnsupported > 0 && !parsed.detectedLayerStudy) {
         toast({
           type: "info",
           title: "Some files skipped",
@@ -217,137 +372,100 @@ function WelcomeMain({ userName }: { userName: string }) {
         })
       }
 
-      const room = Math.max(0, MAX_ATTACHMENTS - uploads.length)
-      const next: UploadItem[] = parsed.items.slice(0, room).map((item) => ({
+      const next: UploadItem[] = parsed.items.map((item) => ({
         ...item,
-        status: "ready" as const,
+        status: "uploading" as const,
       }))
-      if (parsed.items.length > room) {
-        toast({
-          type: "warning",
-          title: "Attachment limit",
-          description: `Only the first ${MAX_ATTACHMENTS} files were kept.`,
-        })
-      }
-      setUploads((prev) => [...prev, ...next].slice(0, MAX_ATTACHMENTS))
+      void startUploads(next)
     },
-    [toast, uploads.length]
+    [layerStudyEnabled, startUploads, toast]
   )
 
-  const uploadFilesToChat = useCallback(
-    async (chatId: string, items: UploadItem[]): Promise<AttachmentBrief[]> => {
-      const attachments: AttachmentBrief[] = []
-
-      await mapPool(items, UPLOAD_CONCURRENCY, async (item) => {
-        setUploads((prev) =>
-          prev.map((u) =>
-            u.id === item.id ? { ...u, status: "uploading", error: undefined } : u
-          )
-        )
-        try {
-          if (item.file.size > 25 * 1024 * 1024) {
-            throw new Error("File exceeds 25 MB")
-          }
-          const uploaded = await studyBriefApi.upload(chatId, item.file, {
-            category: item.category,
-            relativePath: item.relativePath,
-          })
-          const extracted = uploaded.extracted_text ?? null
-          const looksLikeDocument =
-            /\.(pdf|docx|doc|txt|csv|md)$/i.test(item.file.name) ||
-            (uploaded.content_type || "").includes("pdf") ||
-            (uploaded.content_type || "").includes("word")
-          if (looksLikeDocument && !(extracted && extracted.trim())) {
-            toast({
-              type: "warning",
-              title: "Couldn't read document text",
-              description: `We uploaded ${item.file.name}, but couldn't extract its text.`,
-            })
-          }
-          attachments.push({
-            url: uploaded.url,
-            filename: item.file.name,
-            content_type:
-              uploaded.content_type ||
-              item.contentType ||
-              item.file.type ||
-              "application/octet-stream",
-            category: uploaded.category ?? item.category ?? null,
-            relative_path: uploaded.relative_path ?? item.relativePath ?? null,
-            extracted_text: extracted,
-          })
-          setUploads((prev) =>
-            prev.map((u) =>
-              u.id === item.id
-                ? {
-                    ...u,
-                    status: "ready",
-                    url: uploaded.url,
-                    contentType: uploaded.content_type,
-                    extractedText: extracted,
-                    error: undefined,
-                  }
-                : u
-            )
-          )
-        } catch (err) {
-          setUploads((prev) =>
-            prev.map((u) =>
-              u.id === item.id
-                ? {
-                    ...u,
-                    status: "error",
-                    error:
-                      err instanceof ApiError
-                        ? err.message
-                        : err instanceof Error
-                          ? err.message
-                          : "Upload failed",
-                  }
-                : u
-            )
-          )
-          throw err
-        }
-      })
-
-      return attachments
+  const handlePasteFiles = useCallback(
+    (event: React.ClipboardEvent) => {
+      if (sending) return
+      const files = filesFromClipboard(event.clipboardData)
+      if (!files.length) return
+      event.preventDefault()
+      handlePickFiles(files)
     },
-    [toast]
+    [handlePickFiles, sending]
+  )
+
+  const handleDropFiles = useCallback(
+    async (event: React.DragEvent) => {
+      event.preventDefault()
+      event.stopPropagation()
+      setDragActive(false)
+      if (sending) return
+      try {
+        const files = await filesFromDataTransfer(event.dataTransfer)
+        if (!files.length) {
+          toast({
+            type: "warning",
+            title: "Nothing to upload",
+            description: "Drop images, a PDF/Word file, or a folder of images.",
+          })
+          return
+        }
+        handlePickFiles(files)
+      } catch {
+        toast({
+          type: "error",
+          title: "Couldn't read dropped files",
+          description: "Please try again or use the + menu.",
+        })
+      }
+    },
+    [handlePickFiles, sending, toast]
   )
 
   const submit = async (raw?: string) => {
     const content = (raw ?? draft).trim()
-    const pending = uploads.filter((u) => u.status === "ready" && !u.url)
-    if ((!content && pending.length === 0) || sending || sendingLock.current) {
+    if (
+      (!content && readyUploads.length === 0) ||
+      sending ||
+      sendingLock.current ||
+      uploadsBusy ||
+      hasUploadErrors
+    ) {
       return
     }
-    if (hasUploadErrors || uploadsBusy) return
 
     sendingLock.current = true
     setSending(true)
     speech.stop()
 
+    const messageContent =
+      content ||
+      (readyUploads.length
+        ? `Uploaded ${readyUploads.length} file(s)`
+        : "")
+
     try {
-      const inbox = await ensureInbox()
       let chatId: string
       let projectId: string
       const titleSeed =
         content ||
-        (pending.length === 1
-          ? pending[0].file.name
-          : `Uploaded ${pending.length} files`)
+        (readyUploads.length === 1
+          ? readyUploads[0].file.name
+          : `Uploaded ${readyUploads.length} files`)
 
-      if (pending.length > 0) {
-        const chat = await createChat(inbox.id)
-        chatId = chat.id
-        projectId = chat.projectId
-        const attachments = await uploadFilesToChat(chatId, pending)
-        const messageContent =
-          content ||
-          (attachments.length
-            ? `Uploaded ${attachments.length} file(s)`
-            : "")
+      if (readyUploads.length > 0) {
+        const draftChat = draftChatRef.current ?? (await ensureDraftChat())
+        chatId = draftChat.chatId
+        projectId = draftChat.projectId
+        const attachments: AttachmentBrief[] = readyUploads.map((u) => ({
+          url: u.url!,
+          filename: u.file.name,
+          content_type:
+            u.contentType || u.file.type || "application/octet-stream",
+          category: u.category ?? null,
+          relative_path: u.relativePath ?? null,
+          extracted_text: u.extractedText ?? null,
+          is_background: u.isBackground ?? false,
+          layer_order: typeof u.layerOrder === "number" ? u.layerOrder : null,
+        }))
         await studyBriefApi.aiTurn(chatId, messageContent, attachments)
         void generateChatTitle(titleSeed).then(async (title) => {
           try {
@@ -367,17 +485,21 @@ function WelcomeMain({ userName }: { userName: string }) {
       }
       setUploads([])
       setDraft("")
+      draftChatRef.current = null
 
       await Promise.all([refreshProjects(), refreshChats()])
       router.push(`/project/${projectId}/chat/${chatId}`)
     } catch (err) {
       toast({
         type: "error",
-        title: pending.length > 0 ? "Couldn't upload files" : "Couldn't start chat",
+        title:
+          readyUploads.length > 0
+            ? "Couldn't start study chat"
+            : "Couldn't start chat",
         description:
           err instanceof ApiError ? err.message : "Please try again.",
       })
-      if (!pending.length) setDraft(content)
+      if (!readyUploads.length) setDraft(content)
       sendingLock.current = false
       setSending(false)
     }
@@ -419,28 +541,67 @@ function WelcomeMain({ userName }: { userName: string }) {
         >
           <div
             className={cn(
-              "rounded-[1.75rem] border border-gray-200/90 bg-white/95 p-3 shadow-[0_18px_50px_-28px_rgba(37,99,235,0.45)] backdrop-blur-sm transition-shadow",
+              "relative rounded-[1.75rem] border border-gray-200/90 bg-white/95 p-3 shadow-[0_18px_50px_-28px_rgba(37,99,235,0.45)] backdrop-blur-sm transition-shadow",
               "focus-within:border-blue-300 focus-within:shadow-[0_22px_55px_-24px_rgba(37,99,235,0.55)]",
-              speech.listening && "border-red-200 ring-2 ring-red-100"
+              speech.listening && "border-red-200 ring-2 ring-red-100",
+              dragActive && "border-blue-400 ring-2 ring-blue-100"
             )}
+            onDragEnter={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              if (!sending) setDragActive(true)
+            }}
+            onDragOver={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              if (!sending) setDragActive(true)
+            }}
+            onDragLeave={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              if (e.currentTarget.contains(e.relatedTarget as Node)) return
+              setDragActive(false)
+            }}
+            onDrop={(e) => {
+              void handleDropFiles(e)
+            }}
           >
+            {dragActive && (
+              <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-[1.75rem] bg-blue-50/90">
+                <p className="text-sm font-medium text-blue-700">
+                  Drop images, PDF/Word, or a folder to upload
+                </p>
+              </div>
+            )}
             {uploads.length > 0 && (
               <div className="mb-2 border-b border-gray-100 pb-2">
                 <div className="mb-1.5 flex items-center justify-between gap-2 px-1">
                   <span className="text-[11px] font-medium text-gray-500">
-                    {selectedUploads.length}/{uploads.length} ready
+                    {readyUploads.length}/{uploads.length} ready
                     {hasUploadErrors ? " · some failed" : ""}
                   </span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      for (const item of uploads) removeUpload(item.id)
-                    }}
-                    disabled={sending}
-                    className="cursor-pointer rounded px-1.5 py-0.5 text-[11px] text-gray-400 hover:bg-gray-100 hover:text-gray-700 disabled:cursor-not-allowed"
-                  >
-                    Clear all
-                  </button>
+                  <div className="flex items-center gap-1">
+                    {hasUploadErrors && (
+                      <button
+                        type="button"
+                        onClick={() => void retryFailedUploads()}
+                        disabled={sending || uploadsBusy}
+                        className="cursor-pointer rounded px-1.5 py-0.5 text-[11px] font-medium text-blue-600 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        Retry failed
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        for (const item of uploads) removeUpload(item.id)
+                      }}
+                      disabled={sending}
+                      className="cursor-pointer rounded px-1.5 py-0.5 text-[11px] text-gray-400 hover:bg-gray-100 hover:text-gray-700 disabled:cursor-not-allowed"
+                    >
+                      Clear all
+                    </button>
+                  </div>
                 </div>
                 <div className="flex max-h-28 flex-wrap gap-1.5 overflow-y-auto sm:max-h-32 sm:gap-2">
                   {uploads.map((item) => (
@@ -464,8 +625,7 @@ function WelcomeMain({ userName }: { userName: string }) {
                         </p>
                         <p className="text-[10px] text-gray-500">
                           {item.status === "uploading" && "Uploading…"}
-                          {item.status === "ready" && !item.url && "Ready"}
-                          {item.status === "ready" && item.url && "Uploaded"}
+                          {item.status === "ready" && "Ready"}
                           {item.status === "error" && (item.error || "Failed")}
                         </p>
                       </div>
@@ -507,13 +667,31 @@ function WelcomeMain({ userName }: { userName: string }) {
                 setDraft(e.target.value)
               }}
               onKeyDown={onKeyDown}
+              onPaste={handlePasteFiles}
               placeholder="How can MindSurve help you today?"
               className="max-h-40 min-h-[3.25rem] w-full resize-none bg-transparent px-2 py-1.5 text-base text-gray-900 outline-none placeholder:text-gray-400 disabled:cursor-not-allowed disabled:opacity-60"
             />
             <div className="mt-1 flex items-center justify-between gap-2 px-1">
-              <p className="hidden text-[11px] text-gray-400 sm:block">
-                Enter to send · Shift+Enter for a new line
-              </p>
+              <button
+                type="button"
+                disabled={sending}
+                onClick={() => setLayerStudyEnabled((on) => !on)}
+                className={cn(
+                  "inline-flex cursor-pointer items-center gap-1.5 rounded-full px-2.5 py-1.5 text-[11px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50",
+                  layerStudyEnabled
+                    ? "bg-blue-500 text-white shadow-sm shadow-blue-500/25"
+                    : "bg-gray-100 text-gray-600 hover:bg-gray-200 hover:text-gray-800"
+                )}
+                aria-pressed={layerStudyEnabled}
+                title={
+                  layerStudyEnabled
+                    ? "Layer study on — folder uploads map to background + layers"
+                    : "Turn on for a layer study (background + layer folders)"
+                }
+              >
+                <Layers className="size-3.5" />
+                Layer study
+              </button>
               <div className="ml-auto flex items-center gap-1.5">
                 <div ref={attachMenuRef} className="relative">
                   <input
@@ -609,7 +787,7 @@ function WelcomeMain({ userName }: { userName: string }) {
             </div>
           </div>
           <p className="mt-2 text-center text-[11px] text-gray-400">
-            + for images, folders, or PDF / Word · Folder subfolders become categories
+            + for images, folders, or PDF / Word · Paste or drag & drop · Tap Layer study for layered packs
           </p>
         </form>
 

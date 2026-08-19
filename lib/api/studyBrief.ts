@@ -32,6 +32,8 @@ export type UploadDto = {
   category?: string | null
   relative_path?: string | null
   extracted_text?: string | null
+  is_background?: boolean | null
+  layer_order?: number | null
 }
 
 export type ConfirmDto = {
@@ -138,12 +140,21 @@ export const studyBriefApi = {
   upload(
     chatId: string,
     file: File,
-    meta?: { category?: string; relativePath?: string }
+    meta?: {
+      category?: string
+      relativePath?: string
+      isBackground?: boolean
+      layerOrder?: number
+    }
   ) {
     const form = new FormData()
     form.append("file", file)
     if (meta?.category) form.append("category", meta.category)
     if (meta?.relativePath) form.append("relative_path", meta.relativePath)
+    if (meta?.isBackground) form.append("is_background", "true")
+    if (typeof meta?.layerOrder === "number") {
+      form.append("layer_order", String(meta.layerOrder))
+    }
     return api.upload<UploadDto>(`/chats/${chatId}/uploads`, form)
   },
 }

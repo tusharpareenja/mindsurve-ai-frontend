@@ -38,6 +38,8 @@ export type Project = {
   status: ProjectStatus
   /** Hidden personal workspace for chat-first entry (not shown as a project). */
   isInbox?: boolean
+  /** False when this project was shared with the current user. */
+  isOwner?: boolean
   createdAt: Date
   updatedAt?: Date
 }

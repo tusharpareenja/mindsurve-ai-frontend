@@ -13,6 +13,7 @@ import { useRouter } from "next/navigation"
 import { Sidebar } from "@/components/layout/Sidebar"
 import { TopBar } from "@/components/layout/TopBar"
 import { CreateProjectDialog } from "@/components/project/CreateProjectDialog"
+import { InviteCollaboratorDialog } from "@/components/project/InviteCollaboratorDialog"
 import { RenameProjectDialog } from "@/components/project/RenameProjectDialog"
 import { DeleteProjectDialog } from "@/components/project/DeleteProjectDialog"
 import { RenameChatDialog } from "@/components/chat/RenameChatDialog"
@@ -85,6 +86,12 @@ export function AppShell({
     useState<ChatActionTarget | null>(null)
   const [moveChatTarget, setMoveChatTarget] =
     useState<ChatActionTarget | null>(null)
+  const [inviteTarget, setInviteTarget] = useState<{
+    projectId?: string
+    chatId?: string
+    title: string
+    fromInbox?: boolean
+  } | null>(null)
 
   const openSidebar = useCallback(() => setSidebarOpen(true), [])
   const closeSidebar = useCallback(() => setSidebarOpen(false), [])
@@ -153,6 +160,17 @@ export function AppShell({
           onRenameChat={chatActions.renameChat}
           onDeleteChat={chatActions.deleteChat}
           onMoveChat={chatActions.moveChat}
+          onInviteCollaborator={(projectId, title) =>
+            setInviteTarget({ projectId, title, fromInbox: false })
+          }
+          onInviteChatCollaborator={(chat) =>
+            setInviteTarget({
+              chatId: chat.id,
+              projectId: chat.projectId,
+              title: chat.title,
+              fromInbox: true,
+            })
+          }
           onLogout={handleLogout}
           userName={user?.name ?? "User"}
           userEmail={user?.email}
@@ -182,6 +200,18 @@ export function AppShell({
             setMoveChatTarget(null)
           }}
           moveChatId={moveChatTarget?.id}
+        />
+
+        <InviteCollaboratorDialog
+          open={inviteTarget !== null}
+          onClose={() => setInviteTarget(null)}
+          projectId={inviteTarget?.projectId}
+          projectTitle={
+            inviteTarget?.fromInbox ? undefined : inviteTarget?.title
+          }
+          chatId={inviteTarget?.chatId}
+          chatTitle={inviteTarget?.fromInbox ? inviteTarget?.title : undefined}
+          fromInbox={Boolean(inviteTarget?.fromInbox)}
         />
 
         <RenameProjectDialog

@@ -5,16 +5,14 @@ import {
   Plus,
   PanelLeft,
   PanelLeftClose,
-  Settings,
   BookText,
-  Sparkles,
-  Megaphone,
   Power,
   Search,
   SquarePen,
   MoreHorizontal,
   Pencil,
   Trash2,
+  UserPlus,
   ChevronRight,
 } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
@@ -44,6 +42,12 @@ type SidebarProps = {
   onRenameChat?: (chat: { id: string; title: string; projectId: string }) => void
   onDeleteChat?: (chat: { id: string; title: string; projectId: string }) => void
   onMoveChat?: (chat: { id: string; title: string; projectId: string }) => void
+  onInviteCollaborator?: (projectId: string, title: string) => void
+  onInviteChatCollaborator?: (chat: {
+    id: string
+    title: string
+    projectId: string
+  }) => void
   onLogout?: () => void
   userName?: string
   userEmail?: string
@@ -75,6 +79,8 @@ export function Sidebar({
   onRenameChat,
   onDeleteChat,
   onMoveChat,
+  onInviteCollaborator,
+  onInviteChatCollaborator,
   onLogout,
   userName = "Your Name",
   userEmail,
@@ -209,12 +215,6 @@ export function Sidebar({
         </div>
 
         <div className="mt-auto flex flex-col items-center gap-1">
-          <RailButton label="Upgrade to Pro" onClick={() => comingSoon("Upgrade to Pro")}>
-            <Sparkles className="size-5" />
-          </RailButton>
-          <RailButton label="Settings" onClick={() => comingSoon("Settings")}>
-            <Settings className="size-5" />
-          </RailButton>
           <button
             type="button"
             className="mt-2 cursor-pointer rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40"
@@ -368,7 +368,14 @@ export function Sidebar({
 
                             <ProjectMenu
                               onRename={() => onRenameProject?.(project.id)}
-                              onDelete={() => onDeleteProject?.(project.id)}
+                              onDelete={
+                                project.isOwner !== false
+                                  ? () => onDeleteProject?.(project.id)
+                                  : undefined
+                              }
+                              onAddCollaborator={() =>
+                                onInviteCollaborator?.(project.id, project.title)
+                              }
                             />
                           </div>
 
@@ -440,6 +447,12 @@ export function Sidebar({
                                               title: chat.title,
                                               projectId: project.id,
                                             })
+                                          }
+                                          onAddCollaborator={() =>
+                                            onInviteCollaborator?.(
+                                              project.id,
+                                              project.title
+                                            )
                                           }
                                           moveLabel="Move to project"
                                         />
@@ -520,6 +533,13 @@ export function Sidebar({
                               projectId: inboxProject!.id,
                             })
                           }
+                          onAddCollaborator={() =>
+                            onInviteChatCollaborator?.({
+                              id: chat.id,
+                              title: chat.title,
+                              projectId: inboxProject!.id,
+                            })
+                          }
                           moveLabel="Add to project"
                         />
                       </div>
@@ -531,21 +551,6 @@ export function Sidebar({
           </section>
 
           <div className="space-y-0.5 border-t border-gray-200 p-2">
-            <SidebarAction
-              icon={<Sparkles className="size-4 text-gray-500" />}
-              label="Upgrade to Pro"
-              onClick={() => comingSoon("Upgrade to Pro")}
-            />
-            <SidebarAction
-              icon={<Megaphone className="size-4 text-gray-500" />}
-              label="Updates & FAQ"
-              onClick={() => comingSoon("Updates & FAQ")}
-            />
-            <SidebarAction
-              icon={<Settings className="size-4 text-gray-500" />}
-              label="Settings"
-              onClick={() => comingSoon("Settings")}
-            />
             <SidebarAction
               icon={<Power className="size-4" />}
               label="Log out"
@@ -577,9 +582,11 @@ export function Sidebar({
 function ProjectMenu({
   onRename,
   onDelete,
+  onAddCollaborator,
 }: {
   onRename: () => void
-  onDelete: () => void
+  onDelete?: () => void
+  onAddCollaborator?: () => void
 }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
@@ -613,7 +620,7 @@ function ProjectMenu({
       </button>
 
       {open && (
-        <div className="absolute right-0 top-8 z-50 w-36 rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
+        <div className="absolute right-0 top-8 z-50 w-48 rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
           <button
             type="button"
             className="cursor-pointer flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-800 hover:bg-gray-50"
@@ -625,17 +632,32 @@ function ProjectMenu({
             <Pencil className="size-3.5 text-gray-500" />
             Rename
           </button>
-          <button
-            type="button"
-            className="cursor-pointer flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-red-600 hover:bg-red-50"
-            onClick={() => {
-              setOpen(false)
-              onDelete()
-            }}
-          >
-            <Trash2 className="size-3.5" />
-            Delete
-          </button>
+          {onAddCollaborator && (
+            <button
+              type="button"
+              className="cursor-pointer flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-800 hover:bg-gray-50"
+              onClick={() => {
+                setOpen(false)
+                onAddCollaborator()
+              }}
+            >
+              <UserPlus className="size-3.5 text-gray-500" />
+              Add collaborator
+            </button>
+          )}
+          {onDelete && (
+            <button
+              type="button"
+              className="cursor-pointer flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-red-600 hover:bg-red-50"
+              onClick={() => {
+                setOpen(false)
+                onDelete()
+              }}
+            >
+              <Trash2 className="size-3.5" />
+              Delete
+            </button>
+          )}
         </div>
       )}
     </div>

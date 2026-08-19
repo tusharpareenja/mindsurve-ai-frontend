@@ -4,7 +4,7 @@ import type React from "react"
 
 import { useEffect, useRef, useState } from "react"
 import Link from "next/link"
-import { Plus, Menu, Settings, BookText, Sparkles, Megaphone, Power } from "lucide-react"
+import { Plus, Menu, BookText, Power } from "lucide-react"
 
 type Project = {
   id: string
@@ -145,18 +145,6 @@ export default function Sidebar({ open, onClose, projects = [], selectedProjectI
             )}
 
             {/* Other actions */}
-            <button className={`w-full inline-flex items-center ${isCollapsed ? "justify-center h-10" : "gap-2 px-2 sm:px-3 py-2"} rounded-md hover:bg-gray-50 text-black transition-colors text-sm sm:text-base`}>
-              <Sparkles className="size-5 text-gray-500" />
-              {!isCollapsed && <span className="truncate">Upgrade to Pro</span>}
-            </button>
-            <button className={`w-full inline-flex items-center ${isCollapsed ? "justify-center h-10" : "gap-2 px-2 sm:px-3 py-2"} rounded-md hover:bg-gray-50 text-black transition-colors text-sm sm:text-base`}>
-              <Megaphone className="size-5 text-gray-500" />
-              {!isCollapsed && <span className="truncate">Updates & FAQ</span>}
-            </button>
-            <button className={`w-full inline-flex items-center ${isCollapsed ? "justify-center h-10" : "gap-2 px-2 sm:px-3 py-2"} rounded-md hover:bg-gray-50 text-black transition-colors text-sm sm:text-base`}>
-              <Settings className="size-5 text-gray-500" />
-              {!isCollapsed && <span className="truncate">Settings</span>}
-            </button>
             <button className={`w-full inline-flex items-center ${isCollapsed ? "justify-center h-10" : "gap-2 px-2 sm:px-3 py-2"} rounded-md hover:bg-gray-50 text-red-500 transition-colors text-sm sm:text-base`}>
               <Power className="size-5" />
               {!isCollapsed && <span className="truncate">Log out</span>}

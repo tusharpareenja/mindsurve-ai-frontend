@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useRef } from "react"
+import { createPortal } from "react-dom"
 import { X } from "lucide-react"
 import { cn } from "@/lib/utils"
 
@@ -32,9 +33,10 @@ export function Dialog({ open, onClose, title, children, className }: DialogProp
   }, [open, onClose])
 
   if (!open) return null
+  if (typeof document === "undefined") return null
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+  return createPortal(
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
       <button
         type="button"
         className="absolute inset-0 cursor-pointer bg-black/50 backdrop-blur-sm"
@@ -48,7 +50,7 @@ export function Dialog({ open, onClose, title, children, className }: DialogProp
         aria-modal="true"
         aria-label={title}
         className={cn(
-          "relative w-full max-w-md rounded-xl border border-gray-200 bg-white shadow-2xl animate-in fade-in-0 zoom-in-95 duration-200",
+          "relative z-[1] w-full max-w-md rounded-xl border border-gray-200 bg-white shadow-2xl animate-in fade-in-0 zoom-in-95 duration-200",
           className
         )}
       >
@@ -65,6 +67,7 @@ export function Dialog({ open, onClose, title, children, className }: DialogProp
         </div>
         <div className="p-4 text-gray-900">{children}</div>
       </div>
-    </div>
+    </div>,
+    document.body
   )
 }
