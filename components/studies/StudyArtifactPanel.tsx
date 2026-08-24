@@ -54,10 +54,26 @@ export function StudyArtifactPanel({
           <Play className="size-4" />
           Preview
         </button>
+        {previewUrl ? (
+          <a
+            href={previewUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="ml-auto inline-flex size-11 cursor-pointer items-center justify-center gap-1.5 rounded-lg text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-800 md:w-auto md:px-2.5"
+            title="Open preview in a new tab"
+            aria-label="Open preview in full screen"
+          >
+            <ExternalLink className="size-4" />
+            <span className="hidden text-sm font-medium md:inline">Open full screen</span>
+          </a>
+        ) : null}
         <button
           type="button"
           onClick={onClose}
-          className="ml-auto inline-flex size-11 cursor-pointer items-center justify-center rounded-lg text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-700"
+          className={cn(
+            "inline-flex size-11 cursor-pointer items-center justify-center rounded-lg text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-700",
+            !previewUrl && "ml-auto"
+          )}
           aria-label="Close study panel"
         >
           <X className="size-5" />
@@ -75,15 +91,6 @@ export function StudyArtifactPanel({
             className="absolute inset-0 size-full border-0 bg-white"
             allow="clipboard-read; clipboard-write"
           />
-          <a
-            href={previewUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="absolute bottom-3 right-3 inline-flex min-h-11 cursor-pointer items-center gap-2 rounded-full border border-gray-200 bg-white/95 px-4 text-sm font-medium text-gray-700 shadow-lg backdrop-blur hover:bg-gray-50"
-          >
-            <ExternalLink className="size-4" />
-            Open full screen
-          </a>
         </div>
       ) : (
         <div className="flex min-h-0 flex-1 items-center justify-center px-6 text-center">
