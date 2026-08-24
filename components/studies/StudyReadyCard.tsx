@@ -66,7 +66,7 @@ export function StudyReadyCard({
             </span>
             <div className="min-w-0">
               <h3 className="text-sm font-semibold text-gray-900">
-                {launched ? "Your study is live" : "Tasks generated"}
+                {launched ? "Your study is live" : "One-respondent preview ready"}
               </h3>
               <p className="mt-1 text-xs leading-relaxed text-gray-500">
                 {launched ? (
@@ -81,8 +81,8 @@ export function StudyReadyCard({
                     <span className="font-medium text-gray-700">
                       {studyTitle || "Your study"}
                     </span>{" "}
-                    tasks are ready. Preview as a respondent, edit if needed, then
-                    launch.
+                    is ready to try as one respondent. Review every question, edit
+                    if needed, then launch for your full audience.
                   </>
                 )}
               </p>
@@ -171,7 +171,8 @@ export function StudyReadyCard({
             <DialogTitle>Launch this study?</DialogTitle>
             <DialogDescription>
               Once live, respondents can start completing tasks. Task-affecting
-              edits will be locked in this chat flow.
+              edits will be locked in this chat flow. MindSurve will prepare the
+              approved task design for your full audience before collection starts.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter className="gap-2 sm:gap-0">

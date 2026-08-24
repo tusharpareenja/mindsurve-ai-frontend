@@ -1,7 +1,7 @@
 "use client"
 
 import Link from "next/link"
-import { PanelLeft, Bell } from "lucide-react"
+import { Menu, Bell } from "lucide-react"
 import { BrandName } from "@/components/brand/BrandName"
 import { cn } from "@/lib/utils"
 
@@ -33,7 +33,7 @@ export function TopBar({ onOpenSidebar, sidebarOpen, title, className }: TopBarP
             className="cursor-pointer inline-flex size-9 items-center justify-center rounded-lg text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900 lg:hidden"
             aria-label="Open sidebar"
           >
-            <PanelLeft className="size-5" />
+            <Menu className="size-5" />
           </button>
         )}
         <Link href="/welcome" className="cursor-pointer truncate">

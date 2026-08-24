@@ -27,6 +27,9 @@ export type GenerationRun = {
   websocket_url: string | null
   research_tip: string | null
   retryable: boolean
+  mode: "preview" | "full" | "legacy"
+  target_respondents: number | null
+  launch_after_ready: boolean
   created_at: string
   updated_at: string
   completed_at: string | null
@@ -40,7 +43,7 @@ export type GenerationStartResponse = {
 
 export type GenerationLaunchResponse = {
   run: GenerationRun
-  share_url: string
+  share_url: string | null
   message: string
 }
 

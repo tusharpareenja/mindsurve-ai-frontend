@@ -23,6 +23,7 @@ import { Skeleton } from "@/components/feedback/Skeleton"
 import { SpeechToTextButton } from "@/components/chat/SpeechToTextButton"
 import { Button } from "@/components/ui/button"
 import { useAuth } from "@/context/AuthContext"
+import { useChatActivity } from "@/context/ChatActivityContext"
 import { useChats } from "@/context/ChatsContext"
 import { useProjects } from "@/context/ProjectsContext"
 import { useToast } from "@/components/feedback/Toaster"
@@ -108,6 +109,7 @@ function WelcomeMain({ userName }: { userName: string }) {
     renameChat,
     refresh: refreshChats,
   } = useChats()
+  const { beginActivity } = useChatActivity()
   const { ensureInbox, refresh: refreshProjects } = useProjects()
   const [greeting, setGreeting] = useState<Greeting>(DEFAULT_GREETING)
   const [draft, setDraft] = useState("")
@@ -487,6 +489,7 @@ function WelcomeMain({ userName }: { userName: string }) {
       setDraft("")
       draftChatRef.current = null
 
+      beginActivity(chatId, "thinking")
       // Navigate immediately — sidebar refresh can finish in the background.
       router.push(`/project/${projectId}/chat/${chatId}`)
       void Promise.all([refreshProjects(), refreshChats()])
@@ -526,8 +529,8 @@ function WelcomeMain({ userName }: { userName: string }) {
             {greeting.pre}{" "}
             <span className="text-blue-500">{userName}</span>
             {greeting.post}
-          </h1>
-          <p className="mx-auto mt-3 max-w-md text-sm text-gray-500 sm:text-base">
+        </h1>
+        <p className="mx-auto mt-3 max-w-md text-sm text-gray-500 sm:text-base">
             Give us your idea. We handle the rest — no project required to start.
           </p>
         </div>
@@ -727,14 +730,14 @@ function WelcomeMain({ userName }: { userName: string }) {
                       e.target.value = ""
                     }}
                   />
-                  <button
-                    type="button"
+          <button
+            type="button"
                     disabled={sending}
                     onClick={() => setAttachMenuOpen((open) => !open)}
                     className="inline-flex cursor-pointer items-center rounded-full p-2 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 disabled:cursor-not-allowed disabled:opacity-50"
                     aria-label="Add attachment"
-                  >
-                    <Plus className="size-5" />
+          >
+            <Plus className="size-5" />
                   </button>
                   {attachMenuOpen && (
                     <div className="absolute bottom-11 right-0 z-20 w-56 overflow-hidden rounded-xl border border-gray-200 bg-white py-1 shadow-lg">
@@ -808,7 +811,7 @@ function WelcomeMain({ userName }: { userName: string }) {
             >
               <item.icon className="size-3.5 shrink-0 text-blue-500" />
               {item.label}
-            </button>
+          </button>
           ))}
         </div>
 

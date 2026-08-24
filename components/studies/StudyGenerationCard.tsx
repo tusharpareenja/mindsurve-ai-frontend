@@ -34,6 +34,10 @@ export function StudyGenerationCard({
   const [expanded, setExpanded] = useState(failed)
   const pct = Math.round(Math.min(100, Math.max(0, run.progress)))
   const active = steps.find((s) => s.status === "active")
+  const fullAudience = run.mode === "full"
+  const audienceLabel = run.target_respondents
+    ? `${run.target_respondents}-respondent study`
+    : "full study"
 
   useEffect(() => {
     if (failed) setExpanded(true)
@@ -62,7 +66,13 @@ export function StudyGenerationCard({
           <Sparkles className="size-3.5 shrink-0 text-blue-500" />
         )}
         <span className="shrink-0 text-[13px] font-medium text-gray-900">
-          {failed ? "Task generation stopped" : "Generating study tasks"}
+          {failed
+            ? fullAudience
+              ? "Study launch preparation stopped"
+              : "Preview preparation stopped"
+            : fullAudience
+              ? `Preparing ${audienceLabel}`
+              : "Preparing one-respondent preview"}
         </span>
         <span className="min-w-0 truncate text-xs text-gray-400">
           · {failed ? run.error || "Needs a retry" : statusLabel}
@@ -163,7 +173,9 @@ export function StudyGenerationCard({
             <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50/80 px-3 py-2.5">
               <p className="text-xs text-amber-900">
                 {run.error ||
-                  "We couldn’t finish generating tasks. Your draft study is safe — you can retry."}
+                  (fullAudience
+                    ? "We couldn’t finish preparing the full study. Your approved preview is safe — you can retry."
+                    : "We couldn’t finish preparing the preview. Your draft study is safe — you can retry.")}
               </p>
               {run.retryable && onRetry && (
                 <Button

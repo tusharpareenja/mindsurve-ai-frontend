@@ -3,6 +3,12 @@
 import { api } from "@/lib/api/client"
 import type { Chat, ChatMessage, MessageRole } from "@/types"
 
+export type ChatActivityDto = {
+  chat_id?: string
+  kind: "generating" | "collecting"
+  label: string
+}
+
 export type ChatDto = {
   id: string
   project_id: string
@@ -10,6 +16,7 @@ export type ChatDto = {
   created_at: string
   updated_at: string
   last_message_preview?: string | null
+  activity?: ChatActivityDto | null
 }
 
 export type MessageDto = {
@@ -56,6 +63,9 @@ export function mapMessage(dto: MessageDto): ChatMessage {
 export const chatsApi = {
   listAll() {
     return api.get<ChatDto[]>("/chats")
+  },
+  listActivity() {
+    return api.get<Array<ChatActivityDto & { chat_id: string }>>("/chats/activity")
   },
   listForProject(projectId: string) {
     return api.get<ChatDto[]>(`/projects/${projectId}/chats`)

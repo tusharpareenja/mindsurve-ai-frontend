@@ -30,6 +30,10 @@ import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/feedback/Skeleton"
 import { ThinkingStatus } from "@/components/feedback/ThinkingStatus"
 import { StudyBriefCard } from "@/components/studies/StudyBriefCard"
+import {
+  StudyArtifactPanel,
+  type StudyArtifactTab,
+} from "@/components/studies/StudyArtifactPanel"
 import { StudyGenerationCard } from "@/components/studies/StudyGenerationCard"
 import {
   PendingRegenerationCard,
@@ -39,6 +43,7 @@ import { StudyReadyCard } from "@/components/studies/StudyReadyCard"
 import { CollectionChoiceCard, type CollectionMode } from "@/components/studies/CollectionChoiceCard"
 import { RegenerateWarningDialog } from "@/components/studies/RegenerateWarningDialog"
 import { useProjects } from "@/context/ProjectsContext"
+import { useChatActivity } from "@/context/ChatActivityContext"
 import { useChats } from "@/context/ChatsContext"
 import { useToast } from "@/components/feedback/Toaster"
 import { useTaskGeneration } from "@/hooks/use-task-generation"
@@ -117,6 +122,7 @@ function ChatPageInner() {
     isLoading: chatsLoading,
     refresh: refreshChats,
   } = useChats()
+  const { beginActivity, endActivity } = useChatActivity()
 
   const { toast } = useToast()
 
@@ -172,6 +178,7 @@ function ChatPageInner() {
     null
   )
   const [artifactOpen, setArtifactOpen] = useState(false)
+  const [artifactTab, setArtifactTab] = useState<StudyArtifactTab>("details")
   const [panelWidth, setPanelWidth] = useState(PANEL_DEFAULT)
   const autoStartRef = useRef(false)
   const applyingProposalRef = useRef<string | null>(null)
@@ -181,6 +188,7 @@ function ChatPageInner() {
 
   useEffect(() => {
     autoStartRef.current = false
+    setArtifactTab("details")
   }, [chatId])
 
   useEffect(() => {
@@ -296,9 +304,13 @@ function ChatPageInner() {
     }
   }, [brief?.study_type])
 
-  const openStudyPanel = useCallback(() => setArtifactOpen(true), [])
+  const openStudyPanel = useCallback(() => {
+    setArtifactTab("details")
+    setArtifactOpen(true)
+  }, [])
   const closeStudyPanel = useCallback(() => setArtifactOpen(false), [])
   const requestBriefEdit = useCallback(() => {
+    setArtifactTab("details")
     setArtifactOpen(true)
     setEditRequestId((n) => n + 1)
   }, [])
@@ -394,6 +406,7 @@ function ChatPageInner() {
           setThinkingLive("")
           setThoughtsStreamDone(false)
           setThinking(true)
+          beginActivity(chatId, "thinking")
         }
         setReady(true)
         requestAnimationFrame(() => scrollToBottom(false))
@@ -428,6 +441,14 @@ function ChatPageInner() {
               if (mapped.suggestedChatTitle) {
                 void renameChat(chatId, mapped.suggestedChatTitle)
               }
+              if (
+                (mapped.assistantMessage.metadata as { auto_regenerate?: boolean } | undefined)
+                  ?.auto_regenerate
+              ) {
+                void (generationRun ? retryGeneration() : startGeneration()).catch(
+                  () => undefined
+                )
+              }
             } else if (!cancelled) {
               toast({
                 type: "error",
@@ -446,6 +467,7 @@ function ChatPageInner() {
           } finally {
             thinkAbort.abort()
             thinkAbortRef.current = null
+            endActivity(chatId, "thinking")
             if (!cancelled) {
               setThinking(false)
               setThinkingLive("")
@@ -835,6 +857,7 @@ function ChatPageInner() {
     setThoughtsStreamDone(false)
     setSending(true)
     setThinking(true)
+    beginActivity(chatId, "thinking")
     const thinkAbort = new AbortController()
     thinkAbortRef.current = thinkAbort
     void studyBriefApi
@@ -879,6 +902,24 @@ function ChatPageInner() {
       ) {
         void renameChat(chatId, mapped.suggestedChatTitle)
       }
+      const autoRegen = Boolean(
+        (mapped.assistantMessage.metadata as { auto_regenerate?: boolean } | undefined)
+          ?.auto_regenerate || dto.changed_fields?.includes("categories")
+      )
+      if (autoRegen) {
+        void (generationRun ? retryGeneration() : startGeneration()).catch(
+          (err) => {
+            toast({
+              type: "error",
+              title: "Couldn't refresh preview tasks",
+              description:
+                err instanceof ApiError
+                  ? err.message
+                  : "The statement was saved. Retry generation when you’re ready.",
+            })
+          }
+        )
+      }
     } catch (err) {
       setLocalMessages((prev) => prev.filter((m) => m.id !== tempId))
       setDraft(content)
@@ -894,6 +935,7 @@ function ChatPageInner() {
       setSending(false)
       setThinking(false)
       setThinkingLive("")
+      endActivity(chatId, "thinking")
     }
   }
 
@@ -981,6 +1023,7 @@ function ChatPageInner() {
   const confirmRegenerate = async () => {
     if (!pendingPatch) return
     setRegenConfirming(true)
+    beginActivity(chatId, "generating")
     try {
       const res = await taskGenerationApi.regenerate(chatId, {
         ...pendingPatch,
@@ -1003,6 +1046,7 @@ function ChatPageInner() {
         description: "We’re rebuilding your study tasks from the updated brief.",
       })
     } catch (err) {
+      endActivity(chatId, "generating")
       toast({
         type: "error",
         title: "Couldn't regenerate",
@@ -1016,6 +1060,7 @@ function ChatPageInner() {
 
   const handleContinue = async () => {
     setConfirming(true)
+    beginActivity(chatId, "creating")
     autoStartRef.current = true
     try {
       const out = await studyBriefApi.confirm(chatId)
@@ -1028,16 +1073,15 @@ function ChatPageInner() {
       setNextBefore(messagePage.nextBefore)
       toast({
         type: "success",
-        title: "Study draft created",
-        description: "Task generation is starting in the background.",
+        title: "Creating your study",
+        description: "We’ll open a one-respondent preview when it’s ready.",
       })
-      setConfirming(false)
       void startGeneration()
         .then((gen) => applyRun(gen.run))
         .catch((err) => {
           toast({
             type: "error",
-            title: "Couldn't start task generation",
+            title: "Couldn't create study",
             description:
               err instanceof ApiError
                 ? err.message
@@ -1055,6 +1099,7 @@ function ChatPageInner() {
       })
     } finally {
       setConfirming(false)
+      endActivity(chatId, "creating")
     }
   }
 
@@ -1115,10 +1160,12 @@ function ChatPageInner() {
     if (!generationRun || generationRun.status !== "ready") return
     if (toastReadyRef.current === generationRun.id) return
     toastReadyRef.current = generationRun.id
+    setArtifactTab("preview")
+    setArtifactOpen(true)
     toast({
       type: "success",
-      title: "Tasks ready",
-      description: "Preview your study, then launch when you’re happy.",
+      title: "One-respondent preview ready",
+      description: "Try the study here, then launch when you’re happy.",
     })
   }, [generationRun, toast, toastReadyRef])
 
@@ -1129,6 +1176,11 @@ function ChatPageInner() {
     if (chatLocked || sending || thinking) speech.stop()
   }, [chatLocked, sending, thinking, speech.stop])
 
+  const isFullGeneration = generationRun?.mode === "full"
+  const creatingStudy =
+    confirming ||
+    (!isFullGeneration && (generationStarting || generationActive))
+
   const allowBriefEdit =
     !!generationRun &&
     !generationLaunched &&
@@ -1137,20 +1189,22 @@ function ChatPageInner() {
 
   const editLockedMessage = generationLaunched
     ? "This study is live. Task-affecting edits are locked, but you can still chat."
-    : generationActive
-      ? "Task generation is running. Wait for it to finish before editing."
-      : null
+    : isFullGeneration && generationActive
+      ? "Preparing tasks for your full audience. Wait for it to finish before editing."
+      : creatingStudy
+        ? "Creating your study. You can edit once the preview is ready."
+        : null
 
   const composerHint = generationLaunched
     ? "Study is collecting responses. You can keep chatting — study edits stay locked."
-    : generationActive || generationStarting
+    : isFullGeneration && (generationActive || generationStarting)
       ? null
-      : generationReady
-        ? "Tasks are ready. You can still message us, or preview / launch above."
-        : generationFailed
-          ? "Task generation needs a retry. Your draft study is safe."
-          : confirming
-            ? "Creating your study draft…"
+      : creatingStudy
+        ? "Creating your study…"
+        : generationReady
+          ? "Preview is ready. You can still message us, or launch above."
+          : generationFailed
+            ? "We couldn’t finish creating the study. Your draft is safe — try again."
             : null
 
   const composerPlaceholder = speech.listening
@@ -1276,10 +1330,12 @@ function ChatPageInner() {
 
   const briefCardProps = brief
     ? {
+        chatId,
         brief,
         displayBrief,
         phase,
         confirming,
+        creatingStudy,
         allowEdit: allowBriefEdit,
         editLockedMessage,
         onContinue: () => void handleContinue(),
@@ -1432,13 +1488,13 @@ function ChatPageInner() {
 
                 {generationEnabled &&
                   generationLoaded &&
-                  !generationRun &&
                   generationError &&
-                  !generationStarting && (
+                  !generationStarting &&
+                  !isFullGeneration && (
                     <AssistantBlock>
                       <div className="w-full max-w-md rounded-2xl border border-amber-200 bg-amber-50/80 px-4 py-3">
                         <p className="text-sm font-medium text-amber-950">
-                          Couldn’t start task generation
+                          Couldn’t create your study
                         </p>
                         <p className="mt-1 text-xs text-amber-900">
                           {generationError}
@@ -1446,7 +1502,7 @@ function ChatPageInner() {
                         <button
                           type="button"
                           onClick={() => {
-                            void startGeneration().catch((err) => {
+                            void retryGeneration().catch((err) => {
                               toast({
                                 type: "error",
                                 title: "Retry failed",
@@ -1459,7 +1515,7 @@ function ChatPageInner() {
                           }}
                           className="mt-2 inline-flex h-9 cursor-pointer items-center justify-center rounded-md bg-blue-600 px-3 text-sm font-medium text-white hover:bg-blue-700"
                         >
-                          Retry generation
+                          Try again
                         </button>
                       </div>
                     </AssistantBlock>
@@ -1477,7 +1533,8 @@ function ChatPageInner() {
                         onPreview={() => {
                           const url = generationRun.preview_url
                           if (url) {
-                            window.open(url, "_blank", "noopener,noreferrer")
+                            setArtifactTab("preview")
+                            setArtifactOpen(true)
                           } else {
                             toast({
                               type: "warning",
@@ -1490,12 +1547,19 @@ function ChatPageInner() {
                         onLaunch={async () => {
                           try {
                             const res = await launchStudy()
+                            const launched =
+                              res.run.status === "launched" ||
+                              res.run.study_status === "active"
                             toast({
-                              type: "success",
-                              title: "Study launched",
+                              type: launched ? "success" : "info",
+                              title: launched
+                                ? "Study launched"
+                                : "Preparing your full study",
                               description:
                                 res.message ||
-                                "Share the participant link to collect responses.",
+                                (launched
+                                  ? "Share the participant link to collect responses."
+                                  : "MindSurve will launch it automatically when all respondent tasks are ready."),
                             })
                           } catch (err) {
                             toast({
@@ -1580,6 +1644,7 @@ function ChatPageInner() {
 
         <div className="sticky bottom-0 z-10 shrink-0 bg-gradient-to-t from-blue-500/10 via-white/85 to-transparent px-3 pb-4 pt-2 sm:px-4">
           {generationRun &&
+            isFullGeneration &&
             (generationActive || generationStarting || generationFailed) && (
               <div className="mx-auto mb-2 max-w-3xl">
                 <StudyGenerationCard
@@ -1602,12 +1667,12 @@ function ChatPageInner() {
               </div>
             )}
 
-          {generationStarting && !generationRun && (
+          {generationStarting && !generationRun && isFullGeneration && (
             <div className="mx-auto mb-2 flex max-w-3xl items-center gap-2 rounded-xl border border-gray-200/90 bg-white px-3 py-2 shadow-sm">
               <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-blue-500" />
               <Loader2 className="size-3.5 shrink-0 animate-spin text-blue-500" />
               <span className="text-[13px] font-medium text-gray-900">
-                Generating study tasks
+                Preparing tasks for your full audience
               </span>
               <span className="truncate text-xs text-gray-400">· Starting…</span>
             </div>
@@ -1910,10 +1975,18 @@ function ChatPageInner() {
               style={{ width: panelWidth }}
               className="hidden min-h-0 shrink-0 bg-white lg:flex lg:flex-col"
             >
-              <StudyBriefCard
-                {...briefCardProps}
-                layout="panel"
-                editRequestId={editRequestId}
+              <StudyArtifactPanel
+                activeTab={artifactTab}
+                onTabChange={setArtifactTab}
+                onClose={closeStudyPanel}
+                previewUrl={generationRun?.preview_url}
+                details={
+                  <StudyBriefCard
+                    {...briefCardProps}
+                    layout="panel"
+                    editRequestId={editRequestId}
+                  />
+                }
               />
             </aside>
             <div className="fixed inset-0 z-40 lg:hidden">
@@ -1924,10 +1997,18 @@ function ChatPageInner() {
                 onClick={closeStudyPanel}
               />
               <aside className="absolute inset-y-0 right-0 flex w-full max-w-xl flex-col bg-white shadow-2xl">
-                <StudyBriefCard
-                  {...briefCardProps}
-                  layout="panel"
-                  editRequestId={editRequestId}
+                <StudyArtifactPanel
+                  activeTab={artifactTab}
+                  onTabChange={setArtifactTab}
+                  onClose={closeStudyPanel}
+                  previewUrl={generationRun?.preview_url}
+                  details={
+                    <StudyBriefCard
+                      {...briefCardProps}
+                      layout="panel"
+                      editRequestId={editRequestId}
+                    />
+                  }
                 />
               </aside>
             </div>

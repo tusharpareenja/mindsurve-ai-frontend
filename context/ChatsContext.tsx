@@ -9,6 +9,7 @@ import {
   useState,
   type ReactNode,
 } from "react"
+import { useChatActivity } from "@/context/ChatActivityContext"
 import { useAuth } from "@/context/AuthContext"
 import { generateChatTitle } from "@/lib/chat-title"
 import { ApiError } from "@/lib/api/types"
@@ -57,6 +58,7 @@ const ChatsContext = createContext<ChatsContextValue | null>(null)
 
 export function ChatsProvider({ children }: { children: ReactNode }) {
   const { isAuthenticated, isLoading: authLoading } = useAuth()
+  const { hydrateFromServer, endActivity } = useChatActivity()
   const [chats, setChats] = useState<Chat[]>([])
   const [previews, setPreviews] = useState<Record<string, string | undefined>>({})
   const [messagesByChat, setMessagesByChat] = useState<Record<string, ChatMessage[]>>(
@@ -75,7 +77,16 @@ export function ChatsProvider({ children }: { children: ReactNode }) {
       }
       return next
     })
-  }, [])
+    hydrateFromServer(
+      rows
+        .filter((row) => row.activity)
+        .map((row) => ({
+          chat_id: row.id,
+          kind: row.activity!.kind,
+          label: row.activity!.label,
+        }))
+    )
+  }, [hydrateFromServer])
 
   const refresh = useCallback(async () => {
     if (!isAuthenticated) {
@@ -279,6 +290,7 @@ export function ChatsProvider({ children }: { children: ReactNode }) {
   const deleteChat = useCallback(async (chatId: string) => {
     try {
       await chatsApi.delete(chatId)
+      endActivity(chatId)
       setChats((prev) => prev.filter((c) => c.id !== chatId))
       setPreviews((prev) => {
         const next = { ...prev }
@@ -295,11 +307,12 @@ export function ChatsProvider({ children }: { children: ReactNode }) {
       if (err instanceof ApiError && err.status === 404) return false
       throw err
     }
-  }, [])
+  }, [endActivity])
 
   const clearProjectChats = useCallback((projectId: string) => {
     setChats((prev) => {
       const removed = new Set(prev.filter((c) => c.projectId === projectId).map((c) => c.id))
+      for (const id of removed) endActivity(id)
       setPreviews((p) => {
         const next = { ...p }
         for (const id of removed) delete next[id]
@@ -312,7 +325,7 @@ export function ChatsProvider({ children }: { children: ReactNode }) {
       })
       return prev.filter((c) => c.projectId !== projectId)
     })
-  }, [])
+  }, [endActivity])
 
   const value = useMemo(
     () => ({

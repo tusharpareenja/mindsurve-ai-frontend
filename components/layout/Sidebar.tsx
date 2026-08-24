@@ -3,8 +3,8 @@
 import { useRouter } from "next/navigation"
 import {
   Plus,
-  PanelLeft,
-  PanelLeftClose,
+  Menu,
+  Loader2,
   BookText,
   Power,
   Search,
@@ -22,6 +22,7 @@ import { EmptyState } from "@/components/feedback/EmptyState"
 import { ChatMenu } from "@/components/chat/ChatMenu"
 import { ChatBubbleIcon } from "@/components/icons/ChatBubbleIcon"
 import { ProjectFolderIcon } from "@/components/icons/ProjectFolderIcon"
+import { useChatActivity } from "@/context/ChatActivityContext"
 import { useChats } from "@/context/ChatsContext"
 import { useToast } from "@/components/feedback/Toaster"
 import { cn } from "@/lib/utils"
@@ -88,6 +89,7 @@ export function Sidebar({
   const router = useRouter()
   const { toast } = useToast()
   const { getChatsForProject, createChat } = useChats()
+  const { getActivity } = useChatActivity()
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
   /** Whole Projects accordion — closed by default. */
   const [projectsOpen, setProjectsOpen] = useState(false)
@@ -199,7 +201,7 @@ export function Sidebar({
         aria-label="Collapsed sidebar"
       >
         <RailButton label="Open sidebar" onClick={onOpen}>
-          <PanelLeft className="size-5" />
+          <Menu className="size-5" />
         </RailButton>
 
         <div className="mt-2 flex flex-col items-center gap-1">
@@ -248,7 +250,7 @@ export function Sidebar({
             className="cursor-pointer inline-flex size-9 items-center justify-center rounded-lg text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-900"
             aria-label="Collapse sidebar"
           >
-            <PanelLeftClose className="size-5" />
+            <Menu className="size-5" />
           </button>
         </div>
 
@@ -388,6 +390,7 @@ export function Sidebar({
                               ) : (
                                 projectChats.map((chat) => {
                                   const chatSelected = chat.id === selectedChatId
+                                  const activity = getActivity(chat.id)
                                   return (
                                     <li key={chat.id}>
                                       <div
@@ -407,6 +410,7 @@ export function Sidebar({
                                               e
                                             )
                                           }
+                                          title={activity?.label}
                                           className={cn(
                                             "cursor-pointer flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-sm transition-colors",
                                             chatSelected
@@ -414,17 +418,29 @@ export function Sidebar({
                                               : "text-gray-600 hover:text-gray-900"
                                           )}
                                         >
-                                          <ChatBubbleIcon
-                                            className={cn(
-                                              "size-3.5 shrink-0",
-                                              chatSelected
-                                                ? "text-blue-500"
-                                                : "text-gray-400"
-                                            )}
-                                          />
-                                          <span className="truncate">
+                                          {activity ? (
+                                            <Loader2
+                                              className="size-3.5 shrink-0 animate-spin text-blue-500"
+                                              aria-hidden
+                                            />
+                                          ) : (
+                                            <ChatBubbleIcon
+                                              className={cn(
+                                                "size-3.5 shrink-0",
+                                                chatSelected
+                                                  ? "text-blue-500"
+                                                  : "text-gray-400"
+                                              )}
+                                            />
+                                          )}
+                                          <span className="min-w-0 flex-1 truncate">
                                             {chat.title}
                                           </span>
+                                          {activity ? (
+                                            <span className="sr-only">
+                                              {activity.label}
+                                            </span>
+                                          ) : null}
                                         </button>
                                         <ChatMenu
                                           onRename={() =>
@@ -483,6 +499,7 @@ export function Sidebar({
                 {inboxChats.map((chat) => {
                   const chatSelected =
                     inboxSelected && chat.id === selectedChatId
+                  const activity = getActivity(chat.id)
                   return (
                     <li key={chat.id}>
                       <div
@@ -496,6 +513,7 @@ export function Sidebar({
                           onClick={(e) =>
                             handleOpenChat(inboxProject!.id, chat.id, e)
                           }
+                          title={activity?.label}
                           className={cn(
                             "cursor-pointer flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-sm transition-colors",
                             chatSelected
@@ -503,13 +521,25 @@ export function Sidebar({
                               : "text-gray-700 hover:text-gray-900"
                           )}
                         >
-                          <ChatBubbleIcon
-                            className={cn(
-                              "size-3.5 shrink-0",
-                              chatSelected ? "text-blue-500" : "text-gray-400"
-                            )}
-                          />
-                          <span className="truncate">{chat.title}</span>
+                          {activity ? (
+                            <Loader2
+                              className="size-3.5 shrink-0 animate-spin text-blue-500"
+                              aria-hidden
+                            />
+                          ) : (
+                            <ChatBubbleIcon
+                              className={cn(
+                                "size-3.5 shrink-0",
+                                chatSelected ? "text-blue-500" : "text-gray-400"
+                              )}
+                            />
+                          )}
+                          <span className="min-w-0 flex-1 truncate">
+                            {chat.title}
+                          </span>
+                          {activity ? (
+                            <span className="sr-only">{activity.label}</span>
+                          ) : null}
                         </button>
                         <ChatMenu
                           onRename={() =>

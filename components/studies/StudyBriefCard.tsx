@@ -3,11 +3,13 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import {
   CheckCircle2,
+  ImagePlus,
   Loader2,
   PanelRightOpen,
   Pencil,
   Plus,
   Trash2,
+  Upload,
   Users,
   X,
 } from "lucide-react"
@@ -20,15 +22,29 @@ import { useToast } from "@/components/feedback/Toaster"
 import { cn } from "@/lib/utils"
 import {
   AGE_SEGMENTS,
+  MAX_GRID_CATEGORIES,
+  MAX_GRID_ELEMENTS,
+  MAX_LAYER_ELEMENTS,
+  MAX_LAYER_LAYERS,
   MAX_STATEMENT_CHARS,
   MAX_TEXT_CATEGORIES,
   MAX_TEXT_STATEMENTS,
+  MIN_GRID_CATEGORIES,
+  MIN_GRID_ELEMENTS,
+  MIN_LAYER_ELEMENTS,
+  MIN_LAYER_LAYERS,
   MIN_TEXT_CATEGORIES,
   MIN_TEXT_STATEMENTS,
   type BriefPhase,
   type BriefVersion,
+  type ElementBrief,
+  type LayerBrief,
+  type LayerElementBrief,
   type StudyBrief,
 } from "@/types/study-brief"
+import { studyBriefApi } from "@/lib/api/studyBrief"
+import { isImageFile } from "@/lib/chat-uploads"
+import { ApiError } from "@/lib/api/types"
 
 /** Stable snapshot of editable brief fields — used to detect chat/AI updates. */
 function briefEditFingerprint(source: StudyBrief): string {
@@ -47,10 +63,52 @@ function briefEditFingerprint(source: StudyBrief): string {
   })
 }
 
+function emptyTextElement(): ElementBrief {
+  return {
+    name: "",
+    element_type: "text",
+    content: "",
+    description: "",
+  }
+}
+
+const DEFAULT_LAYER_TRANSFORM = { x: 0, y: 0, width: 100, height: 100 }
+
+function emptyLayer(index: number): LayerBrief {
+  return {
+    name: `Layer ${index + 1}`,
+    z_index: index + 1,
+    order: index,
+    elements: [],
+    transform: { ...DEFAULT_LAYER_TRANSFORM },
+  }
+}
+
+function emptyLayerElement(order: number): LayerElementBrief {
+  return {
+    name: "",
+    content: "",
+    order,
+    transform: { ...DEFAULT_LAYER_TRANSFORM },
+  }
+}
+
+type ImageUploadTarget =
+  | { scope: "category"; catIdx: number; elIdx?: number }
+  | { scope: "layer"; layerIdx: number; elIdx?: number }
+  | { scope: "background" }
+
+function fileLabel(file: File): string {
+  return file.name.replace(/\.[^.]+$/, "").trim() || file.name
+}
+
 type StudyBriefCardProps = {
+  chatId?: string
   brief: StudyBrief
   phase: BriefPhase
   confirming?: boolean
+  /** Draft + one-respondent preview are being prepared. */ 
+  creatingStudy?: boolean
   /** Allow edits after draft creation (e.g. before launch). */
   allowEdit?: boolean
   /** Friendly lock reason when edits are blocked (study live). */
@@ -78,9 +136,11 @@ type StudyBriefCardProps = {
 }
 
 export function StudyBriefCard({
+  chatId,
   brief,
   phase,
   confirming = false,
+  creatingStudy = false,
   allowEdit = false,
   editLockedMessage = null,
   editRequestId = 0,
@@ -144,7 +204,19 @@ export function StudyBriefCard({
       elements: c.elements.map((e) => ({ ...e })),
     }))
   )
+  const [layers, setLayers] = useState<LayerBrief[]>(
+    (brief.layers || []).map((layer) => ({
+      ...layer,
+      elements: layer.elements.map((el) => ({ ...el })),
+    }))
+  )
+  const [backgroundImageUrl, setBackgroundImageUrl] = useState(
+    brief.background_image_url
+  )
   const syncedFingerprintRef = useRef<string | null>(null)
+  const imageFileInputRef = useRef<HTMLInputElement>(null)
+  const imageFileTargetRef = useRef<ImageUploadTarget | null>(null)
+  const [imageUploadingKey, setImageUploadingKey] = useState<string | null>(null)
   const briefFingerprint = useMemo(() => briefEditFingerprint(brief), [brief])
 
   const applyBriefToForm = (source: StudyBrief) => {
@@ -174,6 +246,13 @@ export function StudyBriefCard({
         elements: c.elements.map((e) => ({ ...e })),
       }))
     )
+    setLayers(
+      (source.layers || []).map((layer) => ({
+        ...layer,
+        elements: layer.elements.map((el) => ({ ...el })),
+      }))
+    )
+    setBackgroundImageUrl(source.background_image_url)
   }
 
   const created = phase === "created" || brief.status === "created"
@@ -186,7 +265,13 @@ export function StudyBriefCard({
       c.elements.some((e) => e.element_type === "image" && !e.content?.trim())
     )
   const isTextStudy = brief.study_type === "text"
+  const isGridStudy = brief.study_type === "grid"
   const isLayerStudy = brief.study_type === "layer"
+  const maxCategories = isTextStudy ? MAX_TEXT_CATEGORIES : MAX_GRID_CATEGORIES
+  const minCategories = isTextStudy ? MIN_TEXT_CATEGORIES : MIN_GRID_CATEGORIES
+  const maxElements = isTextStudy ? MAX_TEXT_STATEMENTS : MAX_GRID_ELEMENTS
+  const minElements = isTextStudy ? MIN_TEXT_STATEMENTS : MIN_GRID_ELEMENTS
+  const canManageCategories = isTextStudy || isGridStudy
   const layerCount = (brief.layers || []).length
   const layerElementCount = (brief.layers || []).reduce(
     (n, layer) => n + layer.elements.length,
@@ -207,6 +292,29 @@ export function StudyBriefCard({
               statement.length > 0 && statement.length <= MAX_STATEMENT_CHARS
             )
           })
+      ))
+  const gridStructureValid =
+    !isGridStudy ||
+    (categories.length >= MIN_GRID_CATEGORIES &&
+      categories.length <= MAX_GRID_CATEGORIES &&
+      categories.every(
+        (cat) =>
+          cat.name.trim().length > 0 &&
+          cat.elements.length >= MIN_GRID_ELEMENTS &&
+          cat.elements.length <= MAX_GRID_ELEMENTS &&
+          cat.elements.every((el) => el.name.trim() && el.content.trim())
+      ))
+  const layerStructureValid =
+    !isLayerStudy ||
+    (Boolean((backgroundImageUrl || "").trim()) &&
+      layers.length >= MIN_LAYER_LAYERS &&
+      layers.length <= MAX_LAYER_LAYERS &&
+      layers.every(
+        (layer) =>
+          layer.name.trim().length > 0 &&
+          layer.elements.length >= MIN_LAYER_ELEMENTS &&
+          layer.elements.length <= MAX_LAYER_ELEMENTS &&
+          layer.elements.every((el) => el.name.trim() && el.content.trim())
       ))
   const missingStatements =
     isTextStudy &&
@@ -288,7 +396,260 @@ export function StudyBriefCard({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only react to request id bumps
   }, [editRequestId])
 
+  const addCategory = () => {
+    setCategories((current) => {
+      if (current.length >= maxCategories) return current
+      if (isTextStudy) {
+        return [
+          ...current,
+          {
+            name: `Category ${current.length + 1}`,
+            elements: [emptyTextElement(), emptyTextElement(), emptyTextElement()],
+          },
+        ]
+      }
+      return [
+        ...current,
+        {
+          name: `Category ${current.length + 1}`,
+          elements: [],
+        },
+      ]
+    })
+  }
+
+  const removeCategory = (catIdx: number) => {
+    setCategories((current) =>
+      current.length <= 1 ? current : current.filter((_, i) => i !== catIdx)
+    )
+  }
+
+  const addQuestion = () => {
+    setClassificationQuestions((current) => [
+      ...current,
+      {
+        question_text: "",
+        is_required: true,
+        options: ["", ""],
+      },
+    ])
+  }
+
+  const addLayer = () => {
+    setLayers((current) =>
+      current.length >= MAX_LAYER_LAYERS
+        ? current
+        : [...current, emptyLayer(current.length)]
+    )
+  }
+
+  const removeLayer = (layerIdx: number) => {
+    setLayers((current) =>
+      current
+        .filter((_, i) => i !== layerIdx)
+        .map((layer, i) => ({ ...layer, order: i, z_index: i + 1 }))
+    )
+  }
+
+  const openImagePicker = (target: ImageUploadTarget) => {
+    if (!chatId) {
+      toast({
+        type: "error",
+        title: "Couldn't start upload",
+        description: "Reopen this study and try again.",
+      })
+      return
+    }
+    imageFileTargetRef.current = target
+    imageFileInputRef.current?.click()
+  }
+
+  const handleImageFiles = async (files: FileList | null) => {
+    const target = imageFileTargetRef.current
+    imageFileTargetRef.current = null
+    if (!chatId || !target || !files?.length) return
+
+    const images = Array.from(files).filter(isImageFile)
+    if (!images.length) {
+      toast({
+        type: "error",
+        title: "Choose image files",
+        description: "Use PNG, JPG, WebP, or another image format.",
+      })
+      return
+    }
+
+    const uploadOne = async (file: File, category?: string, isBackground?: boolean) => {
+      const result = await studyBriefApi.upload(chatId, file, {
+        category,
+        isBackground,
+      })
+      return { name: fileLabel(file), url: result.url }
+    }
+
+    try {
+      if (target.scope === "background") {
+        setImageUploadingKey("background")
+        const uploaded = await uploadOne(images[0], undefined, true)
+        setBackgroundImageUrl(uploaded.url)
+        toast({
+          type: "success",
+          title: "Background uploaded",
+          description: "Save the brief to keep this change.",
+        })
+        return
+      }
+
+      if (target.scope === "layer") {
+        const currentLayer = layers[target.layerIdx]
+        if (!currentLayer) return
+        const replace = target.elIdx !== undefined
+        const remaining = MAX_LAYER_ELEMENTS - currentLayer.elements.length
+        const toUpload = replace
+          ? images.slice(0, 1)
+          : images.slice(0, Math.max(0, remaining))
+        if (!toUpload.length) {
+          toast({
+            type: "warning",
+            title: "Layer is full",
+            description: `Each layer can have up to ${MAX_LAYER_ELEMENTS} images.`,
+          })
+          return
+        }
+        setImageUploadingKey(
+          target.elIdx !== undefined
+            ? `layer-el-${target.layerIdx}-${target.elIdx}`
+            : `layer-${target.layerIdx}`
+        )
+        const uploaded: LayerElementBrief[] = []
+        for (const file of toUpload) {
+          const item = await uploadOne(file, currentLayer.name.trim() || undefined)
+          uploaded.push({
+            name: item.name,
+            content: item.url,
+            order: currentLayer.elements.length + uploaded.length,
+            transform: { ...DEFAULT_LAYER_TRANSFORM },
+          })
+        }
+        setLayers((current) =>
+          current.map((layer, i) => {
+            if (i !== target.layerIdx) return layer
+            if (target.elIdx !== undefined) {
+              return {
+                ...layer,
+                elements: layer.elements.map((elem, j) =>
+                  j === target.elIdx
+                    ? {
+                        ...elem,
+                        ...uploaded[0],
+                        name: elem.name.trim() || uploaded[0].name,
+                      }
+                    : elem
+                ),
+              }
+            }
+            return { ...layer, elements: [...layer.elements, ...uploaded] }
+          })
+        )
+        toast({
+          type: "success",
+          title: replace ? "Image replaced" : "Images added",
+          description: replace
+            ? "Save the brief to keep this change."
+            : `${uploaded.length} image${uploaded.length === 1 ? "" : "s"} uploaded.`,
+        })
+        return
+      }
+
+      const currentCat = categories[target.catIdx]
+      if (!currentCat) return
+      const replace = target.elIdx !== undefined
+      const remaining = MAX_GRID_ELEMENTS - currentCat.elements.length
+      const toUpload = replace
+        ? images.slice(0, 1)
+        : images.slice(0, Math.max(0, remaining))
+      if (!toUpload.length) {
+        toast({
+          type: "warning",
+          title: "Category is full",
+          description: `Each category can have up to ${MAX_GRID_ELEMENTS} images.`,
+        })
+        return
+      }
+      setImageUploadingKey(
+        target.elIdx !== undefined
+          ? `el-${target.catIdx}-${target.elIdx}`
+          : `cat-${target.catIdx}`
+      )
+      const uploaded: ElementBrief[] = []
+      for (const file of toUpload) {
+        const item = await uploadOne(file, currentCat.name.trim() || undefined)
+        uploaded.push({
+          name: item.name,
+          element_type: "image",
+          content: item.url,
+          description: "",
+        })
+      }
+      setCategories((current) =>
+        current.map((item, i) => {
+          if (i !== target.catIdx) return item
+          if (target.elIdx !== undefined) {
+            return {
+              ...item,
+              elements: item.elements.map((elem, j) =>
+                j === target.elIdx
+                  ? {
+                      ...elem,
+                      ...uploaded[0],
+                      name: elem.name.trim() || uploaded[0].name,
+                    }
+                  : elem
+              ),
+            }
+          }
+          return { ...item, elements: [...item.elements, ...uploaded] }
+        })
+      )
+      toast({
+        type: "success",
+        title: replace ? "Image replaced" : "Images added",
+        description: replace
+          ? "Save the brief to keep this change."
+          : `${uploaded.length} image${uploaded.length === 1 ? "" : "s"} uploaded.`,
+      })
+    } catch (err) {
+      toast({
+        type: "error",
+        title: "Couldn't upload image",
+        description:
+          err instanceof ApiError
+            ? err.message
+            : "Please try again with a smaller image file.",
+      })
+    } finally {
+      setImageUploadingKey(null)
+      if (imageFileInputRef.current) imageFileInputRef.current.value = ""
+    }
+  }
+
   const save = async () => {
+    if (
+      !textStructureValid ||
+      !gridStructureValid ||
+      !layerStructureValid
+    ) {
+      toast({
+        type: "warning",
+        title: "Can't save yet",
+        description: isLayerStudy
+          ? `A layer study needs a background and at least ${MIN_LAYER_LAYERS} layers with ${MIN_LAYER_ELEMENTS} images each.`
+          : isGridStudy
+            ? `Each category needs at least ${MIN_GRID_ELEMENTS} images.`
+            : `Each category needs at least ${MIN_TEXT_STATEMENTS} statements.`,
+      })
+      return
+    }
     setSaving(true)
     try {
       const parsedRespondents = Number.parseInt(respondents, 10)
@@ -317,6 +678,19 @@ export function StudyBriefCard({
             }
           }),
         })),
+        layers: layers.map((layer, index) => ({
+          ...layer,
+          name: layer.name.trim(),
+          order: index,
+          z_index: index + 1,
+          elements: layer.elements.map((el, elIdx) => ({
+            ...el,
+            name: el.name.trim(),
+            content: el.content.trim(),
+            order: elIdx,
+          })),
+        })),
+        background_image_url: backgroundImageUrl,
         classification_questions: classificationQuestions
           .map((q) => ({
             ...q,
@@ -461,6 +835,14 @@ export function StudyBriefCard({
         <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4 text-sm text-gray-700">
           {editing ? (
             <div className="space-y-2.5">
+              <input
+                ref={imageFileInputRef}
+                type="file"
+                accept="image/*"
+                multiple
+                className="hidden"
+                onChange={(e) => void handleImageFiles(e.target.files)}
+              />
               <div className="space-y-1">
                 <Label htmlFor="brief-title">Title</Label>
                 <Input
@@ -508,105 +890,239 @@ export function StudyBriefCard({
                         ? "Categories & statements"
                         : "Categories & elements"}
                   </Label>
-                  {isTextStudy && categories.length < MAX_TEXT_CATEGORIES && (
+                  {canManageCategories && categories.length < maxCategories && (
                     <button
                       type="button"
-                      onClick={() =>
-                        setCategories((current) => [
-                          ...current,
-                          {
-                            name: `Category ${current.length + 1}`,
-                            elements: [
-                              {
-                                name: "",
-                                element_type: "text" as const,
-                                content: "",
-                                description: "",
-                              },
-                              {
-                                name: "",
-                                element_type: "text" as const,
-                                content: "",
-                                description: "",
-                              },
-                              {
-                                name: "",
-                                element_type: "text" as const,
-                                content: "",
-                                description: "",
-                              },
-                            ],
-                          },
-                        ])
-                      }
+                      onClick={addCategory}
                       className="inline-flex cursor-pointer items-center gap-1 rounded px-2 py-1 text-[11px] font-medium text-blue-600 hover:bg-blue-50"
                     >
                       <Plus className="size-3" />
                       Add category
                     </button>
                   )}
+                  {isLayerStudy && layers.length < MAX_LAYER_LAYERS && (
+                    <button
+                      type="button"
+                      onClick={addLayer}
+                      className="inline-flex cursor-pointer items-center gap-1 rounded px-2 py-1 text-[11px] font-medium text-blue-600 hover:bg-blue-50"
+                    >
+                      <Plus className="size-3" />
+                      Add layer
+                    </button>
+                  )}
                 </div>
                 {isLayerStudy ? (
                   <div className="space-y-2">
-                    {brief.background_image_url ? (
-                      <div className="rounded-lg border border-gray-200 p-2.5">
+                    <p className="text-[10px] text-gray-500">
+                      Min {MIN_LAYER_LAYERS} layers, max {MAX_LAYER_LAYERS}. Each
+                      needs {MIN_LAYER_ELEMENTS}–{MAX_LAYER_ELEMENTS} images, plus
+                      a background image.
+                    </p>
+                    <div className="rounded-lg border border-gray-200 p-2.5">
+                      <div className="flex items-center justify-between gap-2">
                         <p className="text-[11px] font-medium text-gray-500">
                           Background
                         </p>
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <button
+                          type="button"
+                          onClick={() => openImagePicker({ scope: "background" })}
+                          disabled={imageUploadingKey !== null}
+                          className="inline-flex cursor-pointer items-center gap-1 text-[11px] font-medium text-blue-600 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {imageUploadingKey === "background" ? (
+                            <Loader2 className="size-3 animate-spin" />
+                          ) : (
+                            <Upload className="size-3" />
+                          )}
+                          {backgroundImageUrl ? "Replace" : "Upload"}
+                        </button>
+                      </div>
+                      {backgroundImageUrl ? (
+                        // eslint-disable-next-line @next/next/no-img-element
                         <img
-                          src={brief.background_image_url}
+                          src={backgroundImageUrl}
                           alt="Background"
                           className="mt-1.5 max-h-28 w-full rounded object-contain bg-gray-50"
                         />
-                      </div>
-                    ) : null}
-                    {(brief.layers || []).map((layer) => (
-                      <div
-                        key={`${layer.name}-${layer.z_index}`}
-                        className="rounded-lg border border-gray-200 p-2.5"
-                      >
-                        <p className="text-xs font-semibold text-gray-800">
-                          {layer.name}{" "}
-                          <span className="font-normal text-gray-400">
-                            · z-{layer.z_index}
-                          </span>
+                      ) : (
+                        <p className="mt-1.5 text-[11px] text-amber-700">
+                          Upload a background image before saving.
                         </p>
-                        <div className="mt-1.5 flex flex-wrap gap-1.5">
-                          {layer.elements.map((el) => (
+                      )}
+                    </div>
+                    {layers.map((layer, layerIdx) => (
+                      <div
+                        key={`layer-${layerIdx}`}
+                        className="space-y-2 rounded-lg border border-gray-200 p-2.5"
+                      >
+                        <div className="flex gap-1.5">
+                          <Input
+                            value={layer.name}
+                            onChange={(e) => {
+                              const name = e.target.value
+                              setLayers((current) =>
+                                current.map((item, i) =>
+                                  i === layerIdx ? { ...item, name } : item
+                                )
+                              )
+                            }}
+                            placeholder={`Layer ${layerIdx + 1}`}
+                            className="h-8 text-xs font-semibold"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => removeLayer(layerIdx)}
+                            disabled={layers.length <= 1}
+                            className="shrink-0 cursor-pointer rounded-md p-2 text-gray-400 hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-40"
+                            aria-label={`Remove layer ${layerIdx + 1}`}
+                          >
+                            <Trash2 className="size-4" />
+                          </button>
+                        </div>
+                        <div className="space-y-2">
+                          {layer.elements.map((el, elIdx) => (
                             <div
-                              key={`${layer.name}-${el.name}-${el.content}`}
-                              className="inline-flex max-w-full items-center gap-1.5 rounded-md bg-gray-50 px-1.5 py-1"
+                              key={`layer-el-${layerIdx}-${elIdx}`}
+                              className="flex flex-col gap-1.5 rounded-md bg-gray-50 p-2 sm:flex-row sm:items-center"
                             >
                               {el.content ? (
                                 // eslint-disable-next-line @next/next/no-img-element
                                 <img
                                   src={el.content}
                                   alt={el.name}
-                                  className="size-7 shrink-0 rounded object-cover"
+                                  className="size-12 shrink-0 rounded object-cover"
                                 />
-                              ) : null}
-                              <span className="truncate text-[11px] text-gray-700">
-                                {el.name}
-                              </span>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    openImagePicker({
+                                      scope: "layer",
+                                      layerIdx,
+                                      elIdx,
+                                    })
+                                  }
+                                  disabled={imageUploadingKey !== null}
+                                  className="inline-flex size-12 shrink-0 cursor-pointer items-center justify-center rounded border border-dashed border-gray-300 bg-white text-gray-400 hover:border-blue-300 hover:text-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
+                                  aria-label={`Upload image for ${el.name || `layer element ${elIdx + 1}`}`}
+                                >
+                                  {imageUploadingKey ===
+                                  `layer-el-${layerIdx}-${elIdx}` ? (
+                                    <Loader2 className="size-4 animate-spin" />
+                                  ) : (
+                                    <ImagePlus className="size-4" />
+                                  )}
+                                </button>
+                              )}
+                              <div className="min-w-0 flex-1 space-y-1">
+                                <Input
+                                  value={el.name}
+                                  onChange={(e) => {
+                                    const name = e.target.value
+                                    setLayers((current) =>
+                                      current.map((item, i) =>
+                                        i === layerIdx
+                                          ? {
+                                              ...item,
+                                              elements: item.elements.map(
+                                                (elem, j) =>
+                                                  j === elIdx
+                                                    ? { ...elem, name }
+                                                    : elem
+                                              ),
+                                            }
+                                          : item
+                                      )
+                                    )
+                                  }}
+                                  placeholder="Image name"
+                                  className="h-8 text-xs"
+                                />
+                                <div className="flex flex-wrap items-center gap-1">
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      openImagePicker({
+                                        scope: "layer",
+                                        layerIdx,
+                                        elIdx,
+                                      })
+                                    }
+                                    disabled={imageUploadingKey !== null}
+                                    className="inline-flex h-8 cursor-pointer items-center gap-1 rounded-md px-2 text-[11px] font-medium text-blue-600 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
+                                  >
+                                    {imageUploadingKey ===
+                                    `layer-el-${layerIdx}-${elIdx}` ? (
+                                      <Loader2 className="size-3 animate-spin" />
+                                    ) : (
+                                      <Upload className="size-3" />
+                                    )}
+                                    {el.content ? "Replace image" : "Upload image"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setLayers((current) =>
+                                        current.map((item, i) =>
+                                          i === layerIdx
+                                            ? {
+                                                ...item,
+                                                elements: item.elements.filter(
+                                                  (_, j) => j !== elIdx
+                                                ),
+                                              }
+                                            : item
+                                        )
+                                      )
+                                    }
+                                    className="inline-flex h-8 cursor-pointer items-center gap-1 rounded-md px-2 text-[11px] font-medium text-red-600 hover:bg-red-50"
+                                    aria-label={`Remove ${el.name || `image ${elIdx + 1}`}`}
+                                  >
+                                    <Trash2 className="size-3" />
+                                    Remove
+                                  </button>
+                                </div>
+                              </div>
                             </div>
                           ))}
                         </div>
+                        {layer.elements.length < MAX_LAYER_ELEMENTS && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              openImagePicker({ scope: "layer", layerIdx })
+                            }
+                            disabled={imageUploadingKey !== null}
+                            className="inline-flex cursor-pointer items-center gap-1 text-[11px] font-medium text-blue-600 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {imageUploadingKey === `layer-${layerIdx}` ? (
+                              <Loader2 className="size-3 animate-spin" />
+                            ) : (
+                              <ImagePlus className="size-3" />
+                            )}
+                            Add images
+                          </button>
+                        )}
                       </div>
                     ))}
-                    <p className="text-[10px] text-gray-500">
-                      Re-upload a root folder to replace layers. Folder order sets
-                      z-index automatically.
-                    </p>
+                    {layers.length < MAX_LAYER_LAYERS && (
+                      <button
+                        type="button"
+                        onClick={addLayer}
+                        className="inline-flex h-10 w-full cursor-pointer items-center justify-center gap-1.5 rounded-lg border border-dashed border-blue-200 bg-blue-50/40 text-[12px] font-medium text-blue-600 hover:border-blue-300 hover:bg-blue-50"
+                      >
+                        <Plus className="size-3.5" />
+                        Add layer
+                      </button>
+                    )}
                   </div>
                 ) : (
                   <>
-                {isTextStudy && (
+                {canManageCategories && (
                   <p className="text-[10px] text-gray-500">
-                    Min {MIN_TEXT_CATEGORIES} categories, max{" "}
-                    {MAX_TEXT_CATEGORIES}. Each needs {MIN_TEXT_STATEMENTS}–
-                    {MAX_TEXT_STATEMENTS} statements, {MAX_STATEMENT_CHARS}{" "}
-                    characters max.
+                    {isTextStudy
+                      ? `Min ${MIN_TEXT_CATEGORIES} categories, max ${MAX_TEXT_CATEGORIES}. Each needs ${MIN_TEXT_STATEMENTS}–${MAX_TEXT_STATEMENTS} statements, ${MAX_STATEMENT_CHARS} characters max.`
+                      : `Min ${MIN_GRID_CATEGORIES} categories, max ${MAX_GRID_CATEGORIES}. Each needs ${MIN_GRID_ELEMENTS}–${MAX_GRID_ELEMENTS} images.`}
                   </p>
                 )}
                 {categories.map((cat, catIdx) => (
@@ -628,17 +1144,11 @@ export function StudyBriefCard({
                         placeholder="Category name"
                         className="h-8 text-xs font-semibold"
                       />
-                      {isTextStudy && (
+                      {canManageCategories && (
                         <button
                           type="button"
-                          onClick={() =>
-                            setCategories((current) =>
-                              current.length <= MIN_TEXT_CATEGORIES
-                                ? current
-                                : current.filter((_, i) => i !== catIdx)
-                            )
-                          }
-                          disabled={categories.length <= MIN_TEXT_CATEGORIES}
+                          onClick={() => removeCategory(catIdx)}
+                          disabled={categories.length <= 1}
                           className="shrink-0 cursor-pointer rounded-md p-2 text-gray-400 hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-gray-400"
                           aria-label={`Remove category ${catIdx + 1}`}
                         >
@@ -738,9 +1248,29 @@ export function StudyBriefCard({
                               <img
                                 src={el.content}
                                 alt={el.name}
-                                className="size-10 shrink-0 rounded object-cover"
+                                className="size-12 shrink-0 rounded object-cover"
                               />
-                            ) : null}
+                            ) : (
+                              <button
+                                type="button"
+                                disabled={imageUploadingKey !== null}
+                                className="inline-flex size-12 shrink-0 cursor-pointer items-center justify-center rounded border border-dashed border-gray-300 bg-white text-gray-400 hover:border-blue-300 hover:text-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
+                                aria-label={`Upload image for ${el.name || `element ${elIdx + 1}`}`}
+                                onClick={() =>
+                                  openImagePicker({
+                                    scope: "category",
+                                    catIdx,
+                                    elIdx,
+                                  })
+                                }
+                              >
+                                {imageUploadingKey === `el-${catIdx}-${elIdx}` ? (
+                                  <Loader2 className="size-4 animate-spin" />
+                                ) : (
+                                  <ImagePlus className="size-4" />
+                                )}
+                              </button>
+                            )}
                             <div className="min-w-0 flex-1 space-y-1">
                               <Input
                                 value={el.name}
@@ -762,36 +1292,52 @@ export function StudyBriefCard({
                                     )
                                   )
                                 }}
-                                placeholder="Element name"
+                                placeholder="Image name"
                                 className="h-8 text-xs"
                               />
-                              <Input
-                                value={el.content}
-                                onChange={(e) => {
-                                  const content = e.target.value
-                                  setCategories((current) =>
-                                    current.map((item, i) =>
-                                      i === catIdx
-                                        ? {
-                                            ...item,
-                                            elements: item.elements.map(
-                                              (elem, j) =>
-                                                j === elIdx
-                                                  ? { ...elem, content }
-                                                  : elem
-                                            ),
-                                          }
-                                        : item
+                              <div className="flex flex-wrap items-center gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    openImagePicker({
+                                      scope: "category",
+                                      catIdx,
+                                      elIdx,
+                                    })
+                                  }
+                                  disabled={imageUploadingKey !== null}
+                                  className="inline-flex h-8 cursor-pointer items-center gap-1 rounded-md px-2 text-[11px] font-medium text-blue-600 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                  {imageUploadingKey === `el-${catIdx}-${elIdx}` ? (
+                                    <Loader2 className="size-3 animate-spin" />
+                                  ) : (
+                                    <Upload className="size-3" />
+                                  )}
+                                  {el.content ? "Replace image" : "Upload image"}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setCategories((current) =>
+                                      current.map((item, i) =>
+                                        i === catIdx
+                                          ? {
+                                              ...item,
+                                              elements: item.elements.filter(
+                                                (_, j) => j !== elIdx
+                                              ),
+                                            }
+                                          : item
+                                      )
                                     )
-                                  )
-                                }}
-                                placeholder={
-                                  el.element_type === "image"
-                                    ? "Image URL"
-                                    : "Text content"
-                                }
-                                className="h-8 text-xs"
-                              />
+                                  }
+                                  className="inline-flex h-8 cursor-pointer items-center gap-1 rounded-md px-2 text-[11px] font-medium text-red-600 hover:bg-red-50"
+                                  aria-label={`Remove ${el.name || `image ${elIdx + 1}`}`}
+                                >
+                                  <Trash2 className="size-3" />
+                                  Remove
+                                </button>
+                              </div>
                             </div>
                           </div>
                         )
@@ -809,12 +1355,7 @@ export function StudyBriefCard({
                                       ...item,
                                       elements: [
                                         ...item.elements,
-                                        {
-                                          name: "",
-                                          element_type: "text" as const,
-                                          content: "",
-                                          description: "",
-                                        },
+                                        emptyTextElement(),
                                       ],
                                     }
                                   : item
@@ -826,12 +1367,39 @@ export function StudyBriefCard({
                           + Add statement
                         </button>
                       )}
+                    {isGridStudy && cat.elements.length < MAX_GRID_ELEMENTS && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          openImagePicker({ scope: "category", catIdx })
+                        }
+                        disabled={imageUploadingKey !== null}
+                        className="inline-flex cursor-pointer items-center gap-1 text-[11px] font-medium text-blue-600 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {imageUploadingKey === `cat-${catIdx}` ? (
+                          <Loader2 className="size-3 animate-spin" />
+                        ) : (
+                          <ImagePlus className="size-3" />
+                        )}
+                        Add images
+                      </button>
+                    )}
                   </div>
                 ))}
+                {canManageCategories && categories.length < maxCategories && (
+                  <button
+                    type="button"
+                    onClick={addCategory}
+                    className="inline-flex h-10 w-full cursor-pointer items-center justify-center gap-1.5 rounded-lg border border-dashed border-blue-200 bg-blue-50/40 text-[12px] font-medium text-blue-600 hover:border-blue-300 hover:bg-blue-50"
+                  >
+                    <Plus className="size-3.5" />
+                    Add category
+                  </button>
+                )}
                 <p className="text-[10px] text-gray-500">
                   {isTextStudy
-                    ? "Paste statements in chat or upload a PDF / Word file and the AI will use them. You can edit freely here."
-                    : "To replace images, paste a new image URL (re-upload via chat if needed)."}
+                    ? `Min ${MIN_TEXT_CATEGORIES} categories, ${MIN_TEXT_STATEMENTS}–${MAX_TEXT_STATEMENTS} statements each. Add or remove here, or paste in chat.`
+                    : `Min ${MIN_GRID_CATEGORIES} categories, ${MIN_GRID_ELEMENTS}–${MAX_GRID_ELEMENTS} images each. Upload images into a category — you can add, replace, or remove any image.`}
                 </p>
                   </>
                 )}
@@ -841,16 +1409,7 @@ export function StudyBriefCard({
                   <Label>Screening questions</Label>
                   <button
                     type="button"
-                    onClick={() =>
-                      setClassificationQuestions((current) => [
-                        ...current,
-                        {
-                          question_text: "",
-                          is_required: true,
-                          options: ["", ""],
-                        },
-                      ])
-                    }
+                    onClick={addQuestion}
                     className="inline-flex cursor-pointer items-center gap-1 rounded px-2 py-1 text-[11px] font-medium text-blue-600 hover:bg-blue-50"
                   >
                     <Plus className="size-3" />
@@ -968,6 +1527,14 @@ export function StudyBriefCard({
                     )}
                   </div>
                 ))}
+                <button
+                  type="button"
+                  onClick={addQuestion}
+                  className="inline-flex h-10 w-full cursor-pointer items-center justify-center gap-1.5 rounded-lg border border-dashed border-blue-200 bg-blue-50/40 text-[12px] font-medium text-blue-600 hover:border-blue-300 hover:bg-blue-50"
+                >
+                  <Plus className="size-3.5" />
+                  Add question
+                </button>
               </div>
               <div className="space-y-1">
                 <Label htmlFor="brief-respondents">Number of respondents</Label>
@@ -1074,6 +1641,19 @@ export function StudyBriefCard({
                   onChange={(e) => setCountries(e.target.value)}
                 />
               </div>
+              {isGridStudy && !gridStructureValid && (
+                <p className="rounded-lg bg-amber-50 px-2.5 py-2 text-[11px] text-amber-800">
+                  Add at least {minCategories} named categories with{" "}
+                  {minElements}–{maxElements} uploaded images each before saving.
+                </p>
+              )}
+              {isLayerStudy && !layerStructureValid && (
+                <p className="rounded-lg bg-amber-50 px-2.5 py-2 text-[11px] text-amber-800">
+                  Add a background image and at least {MIN_LAYER_LAYERS} named
+                  layers with {MIN_LAYER_ELEMENTS}–{MAX_LAYER_ELEMENTS} images
+                  each before saving.
+                </p>
+              )}
               <div className="flex gap-2">
                 <Button
                   type="button"
@@ -1083,7 +1663,9 @@ export function StudyBriefCard({
                     title.trim().length < 3 ||
                     !audienceEditValid ||
                     !screeningEditValid ||
-                    !textStructureValid
+                    !textStructureValid ||
+                    !gridStructureValid ||
+                    !layerStructureValid
                   }
                   className="cursor-pointer disabled:cursor-not-allowed"
                 >
@@ -1287,8 +1869,8 @@ export function StudyBriefCard({
               </div>
               {missingImages && (
                 <p className="rounded-lg bg-amber-50 px-2.5 py-2 text-[11px] text-amber-800">
-                  Some elements still need images. Upload a folder
-                  (Category/images) or attach files, then send.
+                  Some elements still need images. Edit the brief to upload
+                  images into a category, or drop a folder in chat.
                 </p>
               )}
               {missingStatements && (
@@ -1304,16 +1886,21 @@ export function StudyBriefCard({
         </div>
       )}
 
-      {canContinue && !editing && (
+      {(canContinue || creatingStudy) && !editing && (
         <div className={cn("border-t border-gray-100", isPanel ? "shrink-0 px-4 py-3" : "px-3.5 py-2.5")}>
           <Button
             type="button"
             onClick={onContinue}
-            disabled={confirming || missingImages || missingStatements}
-            className="h-9 w-full cursor-pointer bg-blue-600 text-sm text-white hover:bg-blue-700 disabled:cursor-not-allowed"
+            disabled={creatingStudy || confirming || missingImages || missingStatements}
+            className="h-11 w-full cursor-pointer bg-blue-600 text-sm text-white hover:bg-blue-700 disabled:cursor-not-allowed"
           >
-            {confirming ? (
+            {creatingStudy || confirming ? (
               <>
+                <span className="flex items-center gap-1" aria-hidden>
+                  <span className="size-1.5 animate-pulse rounded-full bg-white" />
+                  <span className="size-1.5 animate-pulse rounded-full bg-white/80 [animation-delay:150ms]" />
+                  <span className="size-1.5 animate-pulse rounded-full bg-white/60 [animation-delay:300ms]" />
+                </span>
                 <Loader2 className="size-4 animate-spin" />
                 Creating study…
               </>
@@ -1324,7 +1911,7 @@ export function StudyBriefCard({
         </div>
       )}
 
-      {created && brief.study_id && (isPanel || !panelOpen) && (
+      {created && brief.study_id && !creatingStudy && (isPanel || !panelOpen) && (
         <div className="shrink-0 border-t border-emerald-100 bg-emerald-50/50 px-3.5 py-2 text-[11px] text-emerald-800">
           {editLockedMessage
             ? editLockedMessage

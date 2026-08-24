@@ -5,6 +5,7 @@ import { ToastProvider } from "@/components/feedback/Toaster"
 import { ErrorBoundary } from "@/components/feedback/ErrorBoundary"
 import { AuthProvider } from "@/context/AuthContext"
 import { ProjectsProvider } from "@/context/ProjectsContext"
+import { ChatActivityProvider } from "@/context/ChatActivityContext"
 import { ChatsProvider } from "@/context/ChatsContext"
 
 export function Providers({ children }: { children: React.ReactNode }) {
@@ -13,9 +14,11 @@ export function Providers({ children }: { children: React.ReactNode }) {
       <ToastProvider>
         <AuthProvider>
           <ProjectsProvider>
-            <ChatsProvider>
-              <ErrorBoundary>{children}</ErrorBoundary>
-            </ChatsProvider>
+            <ChatActivityProvider>
+              <ChatsProvider>
+                <ErrorBoundary>{children}</ErrorBoundary>
+              </ChatsProvider>
+            </ChatActivityProvider>
           </ProjectsProvider>
         </AuthProvider>
       </ToastProvider>

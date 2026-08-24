@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react"
 import { useParams, useRouter } from "next/navigation"
 import Link from "next/link"
-import { Folder, Plus, Pencil, MessageSquare } from "lucide-react"
+import { Folder, Plus, Pencil, MessageSquare, Loader2 } from "lucide-react"
 import { AppShell, useChatActions } from "@/components/layout/AppShell"
 import { AuthGate } from "@/components/auth/AuthGate"
 import { RenameProjectDialog } from "@/components/project/RenameProjectDialog"
@@ -12,6 +12,7 @@ import { Skeleton } from "@/components/feedback/Skeleton"
 import { Input } from "@/components/ui/input"
 import { SpeechToTextButton } from "@/components/chat/SpeechToTextButton"
 import { useProjects } from "@/context/ProjectsContext"
+import { useChatActivity } from "@/context/ChatActivityContext"
 import { useChats } from "@/context/ChatsContext"
 import { useToast } from "@/components/feedback/Toaster"
 import { useSpeechToText } from "@/hooks/use-speech-to-text"
@@ -236,11 +237,13 @@ function ProjectChatRows({
   getPreview: (chatId: string) => string | undefined
 }) {
   const { renameChat, deleteChat, moveChat } = useChatActions()
+  const { getActivity } = useChatActivity()
 
   return (
     <>
       {chats.map((chat) => {
         const preview = getPreview(chat.id)
+        const activity = getActivity(chat.id)
         const target = {
           id: chat.id,
           title: chat.title,
@@ -251,9 +254,14 @@ function ProjectChatRows({
             <div className="flex items-start">
               <Link
                 href={`/project/${projectId}/chat/${chat.id}`}
+                title={activity?.label}
                 className="cursor-pointer flex min-w-0 flex-1 items-start gap-3 px-4 py-3 transition-colors hover:bg-gray-50"
               >
-                <MessageSquare className="mt-0.5 size-4 shrink-0 text-gray-400" />
+                {activity ? (
+                  <Loader2 className="mt-0.5 size-4 shrink-0 animate-spin text-blue-500" />
+                ) : (
+                  <MessageSquare className="mt-0.5 size-4 shrink-0 text-gray-400" />
+                )}
                 <div className="min-w-0 flex-1">
                   <div className="flex items-baseline justify-between gap-3">
                     <p className="truncate text-sm font-medium text-gray-900">

@@ -1,6 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useRef, useState } from "react"
+import { useChatActivity } from "@/context/ChatActivityContext"
 import { ApiError } from "@/lib/api/types"
 import { taskGenerationApi } from "@/lib/api/taskGeneration"
 import { subscribeJobEvents } from "@/lib/ws/job-events"
@@ -82,6 +83,7 @@ export function stepsForRun(run: GenerationRun | null): GenerationStep[] {
 }
 
 export function useTaskGeneration(chatId: string, enabled: boolean) {
+  const { beginActivity, endActivity } = useChatActivity()
   const [run, setRun] = useState<GenerationRun | null>(null)
   const [starting, setStarting] = useState(false)
   const [launching, setLaunching] = useState(false)
@@ -156,6 +158,7 @@ export function useTaskGeneration(chatId: string, enabled: boolean) {
   }, [applyRun, chatId, enabled])
 
   const start = useCallback(async () => {
+    beginActivity(chatId, "generating")
     setStarting(true)
     setError(null)
     try {
@@ -163,6 +166,7 @@ export function useTaskGeneration(chatId: string, enabled: boolean) {
       applyRun(res.run)
       return res
     } catch (err) {
+      endActivity(chatId, "generating")
       const message =
         err instanceof ApiError
           ? err.message
@@ -172,9 +176,10 @@ export function useTaskGeneration(chatId: string, enabled: boolean) {
     } finally {
       setStarting(false)
     }
-  }, [applyRun, chatId])
+  }, [applyRun, beginActivity, chatId, endActivity])
 
   const retry = useCallback(async () => {
+    beginActivity(chatId, "generating")
     setStarting(true)
     setError(null)
     try {
@@ -182,6 +187,7 @@ export function useTaskGeneration(chatId: string, enabled: boolean) {
       applyRun(res.run)
       return res
     } catch (err) {
+      endActivity(chatId, "generating")
       const message =
         err instanceof ApiError ? err.message : "Retry failed. Please try again."
       setError(message)
@@ -189,7 +195,7 @@ export function useTaskGeneration(chatId: string, enabled: boolean) {
     } finally {
       setStarting(false)
     }
-  }, [applyRun, chatId])
+  }, [applyRun, beginActivity, chatId, endActivity])
 
   const launch = useCallback(async () => {
     setLaunching(true)
@@ -276,24 +282,12 @@ export function useTaskGeneration(chatId: string, enabled: boolean) {
             : prev
         )
       },
-      onCompleted: (message) => {
+      onCompleted: (_message) => {
         if (stopped) return
         stopPolling()
+        // The backend may automatically launch after full-audience generation,
+        // so always take the authoritative state instead of forcing "ready".
         void refresh()
-        if (message) {
-          setRun((prev) =>
-            prev
-              ? {
-                  ...prev,
-                  status: "ready",
-                  progress: 100,
-                  message:
-                    message ||
-                    "Tasks are ready. Preview your study, then launch when you’re happy.",
-                }
-              : prev
-          )
-        }
       },
       onFailed: (errMsg) => {
         if (stopped) return
@@ -318,6 +312,15 @@ export function useTaskGeneration(chatId: string, enabled: boolean) {
   }, [refresh, runId, runStatus, runWsUrl, runJobId, startPolling, stopPolling])
 
   const isActive = !!run && ACTIVE.includes(run.status)
+  useEffect(() => {
+    if (!enabled || !chatId) return
+    if (starting || isActive) {
+      beginActivity(chatId, "generating")
+      return
+    }
+    if (loaded) endActivity(chatId, "generating")
+  }, [beginActivity, chatId, enabled, endActivity, isActive, loaded, starting])
+
   const isReady = run?.status === "ready"
   const isLaunched = run?.status === "launched" || run?.study_status === "active"
   const isFailed = run?.status === "failed" || run?.status === "cancelled"

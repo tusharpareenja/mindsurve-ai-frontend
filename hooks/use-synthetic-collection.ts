@@ -1,6 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useRef, useState } from "react"
+import { useChatActivity } from "@/context/ChatActivityContext"
 import { ApiError } from "@/lib/api/types"
 import { syntheticCollectionApi } from "@/lib/api/syntheticCollection"
 import { subscribeJobEvents } from "@/lib/ws/job-events"
@@ -21,6 +22,7 @@ function startedTotal(completed: number, inProgress: number, abandoned: number) 
 }
 
 export function useSyntheticCollection(chatId: string, enabled: boolean) {
+  const { beginActivity, endActivity } = useChatActivity()
   const [run, setRun] = useState<SyntheticCollectionRun | null>(null)
   const [starting, setStarting] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -77,6 +79,7 @@ export function useSyntheticCollection(chatId: string, enabled: boolean) {
 
   const start = useCallback(
     async (mode: SyntheticMode) => {
+      beginActivity(chatId, "collecting")
       setStarting(true)
       setError(null)
       try {
@@ -87,6 +90,7 @@ export function useSyntheticCollection(chatId: string, enabled: boolean) {
         applyRun(res.run)
         return res
       } catch (err) {
+        endActivity(chatId, "collecting")
         const message =
           err instanceof ApiError
             ? err.message
@@ -97,10 +101,11 @@ export function useSyntheticCollection(chatId: string, enabled: boolean) {
         setStarting(false)
       }
     },
-    [applyRun, chatId]
+    [applyRun, beginActivity, chatId, endActivity]
   )
 
   const retry = useCallback(async () => {
+    beginActivity(chatId, "collecting")
     setStarting(true)
     setError(null)
     try {
@@ -111,6 +116,7 @@ export function useSyntheticCollection(chatId: string, enabled: boolean) {
       applyRun(res.run)
       return res
     } catch (err) {
+      endActivity(chatId, "collecting")
       const message =
         err instanceof ApiError ? err.message : "Retry failed. Please try again."
       setError(message)
@@ -118,7 +124,7 @@ export function useSyntheticCollection(chatId: string, enabled: boolean) {
     } finally {
       setStarting(false)
     }
-  }, [applyRun, chatId, run?.mode])
+  }, [applyRun, beginActivity, chatId, endActivity, run?.mode])
 
   const stopPolling = useCallback(() => {
     if (pollRef.current) {
@@ -244,6 +250,15 @@ export function useSyntheticCollection(chatId: string, enabled: boolean) {
 
   const stats: ResponseStats = mapResponseStats(run?.stats)
   const isActive = !!run && ACTIVE.includes(run.status)
+  useEffect(() => {
+    if (!enabled || !chatId) return
+    if (starting || isActive) {
+      beginActivity(chatId, "collecting")
+      return
+    }
+    if (loaded) endActivity(chatId, "collecting")
+  }, [beginActivity, chatId, enabled, endActivity, isActive, loaded, starting])
+
   const isCompleted = run?.status === "completed"
   const isFailed = run?.status === "failed" || run?.status === "cancelled"
 
