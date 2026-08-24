@@ -168,6 +168,13 @@ function ChatPageInner() {
   const [resolvedProposals, setResolvedProposals] = useState<
     Record<string, ProposalStatus>
   >({})
+  const [briefSyncStatus, setBriefSyncStatus] = useState<
+    "idle" | "updating" | "updated"
+  >("idle")
+  const [briefSyncChangedFields, setBriefSyncChangedFields] = useState<string[]>(
+    []
+  )
+  const briefSyncTimerRef = useRef<number | null>(null)
   const [collectionChoice, setCollectionChoice] = useState<CollectionMode | null>(
     null
   )
@@ -212,6 +219,50 @@ function ChatPageInner() {
     },
     [chatId]
   )
+
+  const clearBriefSync = useCallback(() => {
+    if (briefSyncTimerRef.current !== null) {
+      window.clearTimeout(briefSyncTimerRef.current)
+      briefSyncTimerRef.current = null
+    }
+    setBriefSyncStatus("idle")
+    setBriefSyncChangedFields([])
+  }, [])
+
+  const markBriefUpdating = useCallback(() => {
+    if (briefSyncTimerRef.current !== null) {
+      window.clearTimeout(briefSyncTimerRef.current)
+      briefSyncTimerRef.current = null
+    }
+    setBriefSyncStatus("updating")
+    setBriefSyncChangedFields([])
+  }, [])
+
+  const markBriefUpdated = useCallback(
+    (fields: string[] = []) => {
+      if (briefSyncTimerRef.current !== null) {
+        window.clearTimeout(briefSyncTimerRef.current)
+      }
+      setBriefSyncStatus("updated")
+      setBriefSyncChangedFields(fields)
+      briefSyncTimerRef.current = window.setTimeout(() => {
+        clearBriefSync()
+      }, 4500)
+    },
+    [clearBriefSync]
+  )
+
+  useEffect(() => {
+    return () => {
+      if (briefSyncTimerRef.current !== null) {
+        window.clearTimeout(briefSyncTimerRef.current)
+      }
+    }
+  }, [])
+
+  useEffect(() => {
+    clearBriefSync()
+  }, [chatId, clearBriefSync])
 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const folderInputRef = useRef<HTMLInputElement>(null)
@@ -406,6 +457,7 @@ function ChatPageInner() {
           setThinkingLive("")
           setThoughtsStreamDone(false)
           setThinking(true)
+          markBriefUpdating()
           beginActivity(chatId, "thinking")
         }
         setReady(true)
@@ -426,6 +478,7 @@ function ChatPageInner() {
             .finally(() => {
               if (!cancelled) setThoughtsStreamDone(true)
             })
+          let briefUpdated = false
           try {
             const cont = await studyBriefApi.aiContinue(chatId)
             if (
@@ -438,6 +491,8 @@ function ChatPageInner() {
               setBrief(mapped.studyBrief)
               setPhase(mapped.phase)
               void refreshVersions()
+              markBriefUpdated(cont.changed_fields ?? [])
+              briefUpdated = true
               if (mapped.suggestedChatTitle) {
                 void renameChat(chatId, mapped.suggestedChatTitle)
               }
@@ -471,6 +526,9 @@ function ChatPageInner() {
             if (!cancelled) {
               setThinking(false)
               setThinkingLive("")
+              if (!briefUpdated) {
+                clearBriefSync()
+              }
             }
           }
         }
@@ -857,6 +915,7 @@ function ChatPageInner() {
     setThoughtsStreamDone(false)
     setSending(true)
     setThinking(true)
+    markBriefUpdating()
     beginActivity(chatId, "thinking")
     const thinkAbort = new AbortController()
     thinkAbortRef.current = thinkAbort
@@ -895,6 +954,7 @@ function ChatPageInner() {
       setBrief(mapped.studyBrief)
       setPhase(mapped.phase)
       void refreshVersions()
+      markBriefUpdated(dto.changed_fields ?? [])
 
       if (
         mapped.suggestedChatTitle &&
@@ -923,6 +983,7 @@ function ChatPageInner() {
     } catch (err) {
       setLocalMessages((prev) => prev.filter((m) => m.id !== tempId))
       setDraft(content)
+      clearBriefSync()
       toast({
         type: "error",
         title: "Couldn't send message",
@@ -1352,6 +1413,8 @@ function ChatPageInner() {
         onViewVersion: setViewingVersion,
         onRestoreVersion: () => void handleRestoreVersion(),
         restoringVersion,
+        briefSyncStatus,
+        briefChangedFields: briefSyncChangedFields,
       }
     : null
 

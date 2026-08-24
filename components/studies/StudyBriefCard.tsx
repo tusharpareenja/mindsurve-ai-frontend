@@ -102,6 +102,42 @@ function fileLabel(file: File): string {
   return file.name.replace(/\.[^.]+$/, "").trim() || file.name
 }
 
+const BRIEF_CHANGE_FIELD_LABELS: Record<string, string> = {
+  title: "Title",
+  background: "Background",
+  main_question: "Main question",
+  orientation_text: "Orientation",
+  rating_scale: "Rating scale",
+  categories: "Categories & statements",
+  layers: "Layers & elements",
+  classification_questions: "Screening questions",
+  audience: "Audience",
+}
+
+function briefSectionChanged(
+  changedFields: string[],
+  keys: string[]
+): boolean {
+  return keys.some((key) => changedFields.includes(key))
+}
+
+function briefSectionClass(
+  syncStatus: StudyBriefCardProps["briefSyncStatus"],
+  changedFields: string[],
+  keys: string[],
+  baseClass?: string
+): string {
+  const highlighted =
+    syncStatus === "updated" &&
+    briefSectionChanged(changedFields, keys)
+  return cn(
+    baseClass,
+    syncStatus === "updating" && "opacity-60 transition-opacity duration-300",
+    highlighted &&
+      "rounded-lg bg-emerald-50/70 ring-2 ring-emerald-200 transition-all duration-500"
+  )
+}
+
 type StudyBriefCardProps = {
   chatId?: string
   brief: StudyBrief
@@ -133,6 +169,10 @@ type StudyBriefCardProps = {
   onViewVersion?: (version: number) => void
   onRestoreVersion?: () => void
   restoringVersion?: boolean
+  /** Sidebar sync while chat AI is updating the brief. */
+  briefSyncStatus?: "idle" | "updating" | "updated"
+  /** Fields changed in the latest AI update (for section highlights). */
+  briefChangedFields?: string[]
 }
 
 export function StudyBriefCard({
@@ -160,6 +200,8 @@ export function StudyBriefCard({
   onViewVersion,
   onRestoreVersion,
   restoringVersion = false,
+  briefSyncStatus = "idle",
+  briefChangedFields = [],
 }: StudyBriefCardProps) {
   const { toast } = useToast()
   const isPanel = layout === "panel"
@@ -744,7 +786,15 @@ export function StudyBriefCard({
           <p className="text-[11px] font-medium uppercase tracking-wide text-blue-600">
             Study brief
           </p>
-          <h3 className="truncate text-sm font-semibold text-gray-900">
+          <h3
+            className={cn(
+              "truncate text-sm font-semibold text-gray-900",
+              isPanel &&
+                briefSyncStatus === "updated" &&
+                briefChangedFields.includes("title") &&
+                "text-emerald-800"
+            )}
+          >
             {shown.title || "Untitled study"}
           </h3>
           <p className="mt-0.5 text-[11px] text-gray-500">
@@ -830,6 +880,44 @@ export function StudyBriefCard({
           )}
         </div>
       </div>
+
+      {isPanel && briefSyncStatus !== "idle" && (
+        <div
+          className={cn(
+            "shrink-0 border-b px-4 py-2.5",
+            briefSyncStatus === "updating"
+              ? "border-blue-100 bg-blue-50"
+              : "border-emerald-100 bg-emerald-50"
+          )}
+          role="status"
+          aria-live="polite"
+        >
+          <div
+            className={cn(
+              "flex items-center gap-2 text-xs font-medium",
+              briefSyncStatus === "updating" ? "text-blue-700" : "text-emerald-700"
+            )}
+          >
+            {briefSyncStatus === "updating" ? (
+              <>
+                <Loader2 className="size-3.5 shrink-0 animate-spin" />
+                <span>Updating study brief from chat…</span>
+              </>
+            ) : (
+              <>
+                <CheckCircle2 className="size-3.5 shrink-0" />
+                <span>
+                  {briefChangedFields.length > 0
+                    ? `Updated: ${briefChangedFields
+                        .map((field) => BRIEF_CHANGE_FIELD_LABELS[field] || field)
+                        .join(", ")}`
+                    : "Updated just now — you're viewing the latest version"}
+                </span>
+              </>
+            )}
+          </div>
+        </div>
+      )}
 
       {isPanel && (
         <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4 text-sm text-gray-700">
@@ -1693,14 +1781,35 @@ export function StudyBriefCard({
             </div>
           ) : (
             <>
-              <p className="line-clamp-3 text-xs leading-5 text-gray-600">
+              <p
+                className={briefSectionClass(
+                  briefSyncStatus,
+                  briefChangedFields,
+                  ["background"],
+                  "line-clamp-3 text-xs leading-5 text-gray-600"
+                )}
+              >
                 {shown.background || "No description yet."}
               </p>
-              <div className="rounded-lg bg-gray-50 px-2.5 py-2">
+              <div
+                className={briefSectionClass(
+                  briefSyncStatus,
+                  briefChangedFields,
+                  ["main_question"],
+                  "rounded-lg bg-gray-50 px-2.5 py-2"
+                )}
+              >
                 <p className="text-[11px] font-medium text-gray-500">Main question</p>
                 <p className="mt-0.5 text-xs">{shown.main_question || "—"}</p>
               </div>
-              <div className="space-y-1.5">
+              <div
+                className={briefSectionClass(
+                  briefSyncStatus,
+                  briefChangedFields,
+                  ["categories", "layers"],
+                  "space-y-1.5"
+                )}
+              >
                 <p className="text-[11px] font-medium text-gray-500">
                   {shown.study_type === "text"
                     ? "Categories & statements"
@@ -1801,7 +1910,13 @@ export function StudyBriefCard({
                   ))
                 )}
               </div>
-              <div>
+              <div
+                className={briefSectionClass(
+                  briefSyncStatus,
+                  briefChangedFields,
+                  ["classification_questions"]
+                )}
+              >
                 <p className="mb-1 text-[11px] font-medium text-gray-500">
                   Screening questions
                 </p>
@@ -1825,7 +1940,13 @@ export function StudyBriefCard({
                   <p className="text-[11px] text-gray-400">None yet</p>
                 )}
               </div>
-              <div>
+              <div
+                className={briefSectionClass(
+                  briefSyncStatus,
+                  briefChangedFields,
+                  ["audience"]
+                )}
+              >
                 <p className="mb-1 flex items-center gap-1 text-[11px] font-medium text-gray-500">
                   <Users className="size-3" />
                   Audience
