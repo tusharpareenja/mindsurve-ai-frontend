@@ -54,7 +54,7 @@ export function StudyArtifactPanel({
           <Play className="size-4" />
           Preview
         </button>
-        {previewUrl ? (
+        {previewUrl && activeTab === "preview" ? (
           <a
             href={previewUrl}
             target="_blank"
@@ -72,7 +72,7 @@ export function StudyArtifactPanel({
           onClick={onClose}
           className={cn(
             "inline-flex size-11 cursor-pointer items-center justify-center rounded-lg text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-700",
-            !previewUrl && "ml-auto"
+            !(previewUrl && activeTab === "preview") && "ml-auto"
           )}
           aria-label="Close study panel"
         >
