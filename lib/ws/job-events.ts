@@ -17,10 +17,17 @@ export function parseJobWsEvent(raw: unknown): JobWsEvent {
       message: typeof msg.message === "string" ? msg.message : undefined,
     }
   }
-  if (type === "completed") {
+  if (type === "completed" || type === "complete" || type === "done") {
     return {
       type: "completed",
       progress: typeof msg.progress === "number" ? msg.progress : 100,
+      message: typeof msg.message === "string" ? msg.message : undefined,
+    }
+  }
+  if (type === "progress" && Number(msg.progress ?? 0) >= 100) {
+    return {
+      type: "completed",
+      progress: 100,
       message: typeof msg.message === "string" ? msg.message : undefined,
     }
   }

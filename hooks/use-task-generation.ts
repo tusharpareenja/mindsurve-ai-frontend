@@ -102,6 +102,13 @@ export function useTaskGeneration(chatId: string, enabled: boolean) {
   const applyRun = useCallback((next: GenerationRun) => {
     setRun((prev) => {
       if (!prev) return next
+      if (prev.id === next.id) {
+        const prevDone =
+          prev.status === "ready" || prev.status === "launched"
+        const nextActive = ACTIVE.includes(next.status)
+        // A late "still generating" snapshot must not put the spinner back.
+        if (prevDone && nextActive) return prev
+      }
       // Keep progress monotonic while a job is active.
       if (
         ACTIVE.includes(next.status) &&
@@ -241,85 +248,124 @@ export function useTaskGeneration(chatId: string, enabled: boolean) {
   const startPolling = useCallback(() => {
     if (pollRef.current) return
     const tick = () => {
+      const status = runRef.current?.status
+      if (!status || !ACTIVE.includes(status)) {
+        stopPolling()
+        return
+      }
       void refresh().catch(() => {
         /* keep trying until the job finishes */
       })
     }
     tick()
     pollRef.current = window.setInterval(tick, POLL_MS)
-  }, [refresh])
+  }, [refresh, stopPolling])
 
-  // WebSocket is primary; REST polling is fallback only while disconnected.
+  const markJobFinished = useCallback(
+    (message?: string) => {
+      setRun((prev) => {
+        if (!prev || !ACTIVE.includes(prev.status)) return prev
+        if (prev.launch_after_ready) {
+          return {
+            ...prev,
+            progress: 100,
+            message: message || prev.message,
+            status: "saving",
+          }
+        }
+        return {
+          ...prev,
+          progress: 100,
+          message:
+            message ||
+            (prev.mode === "full"
+              ? "Tasks are ready."
+              : "One-respondent preview ready."),
+          status: "ready",
+        }
+      })
+      void refresh().catch(() => undefined)
+    },
+    [refresh]
+  )
+
   useEffect(() => {
-    if (!runId || !runStatus || !ACTIVE.includes(runStatus)) {
+    if (!runStatus || !ACTIVE.includes(runStatus)) stopPolling()
+  }, [runStatus, stopPolling])
+
+  // Subscribe once per job. Do not tear down on generating → saving or we
+  // can miss the Unilever "completed" frame and leave the spinner stuck.
+  useEffect(() => {
+    if (!runId) {
       stopPolling()
       wsLiveRef.current = false
       return
     }
+    if (!runRef.current || !ACTIVE.includes(runRef.current.status)) {
+      return
+    }
 
     let stopped = false
-    wsLiveRef.current = false
+    startPolling()
 
     const sub = subscribeJobEvents(runWsUrl, {
       onOpen: () => {
         if (stopped) return
         wsLiveRef.current = true
-        stopPolling()
       },
       onDisconnected: () => {
         if (stopped) return
         wsLiveRef.current = false
+        startPolling()
       },
       onFallback: () => {
-        if (stopped || wsLiveRef.current) return
+        if (stopped) return
+        wsLiveRef.current = false
         startPolling()
       },
       onProgress: (progress, message) => {
         if (stopped) return
+        if (progress >= 100) {
+          markJobFinished(message)
+          return
+        }
         setRun((prev) =>
-          prev
+          prev && ACTIVE.includes(prev.status)
             ? {
                 ...prev,
                 progress: Math.max(prev.progress, Math.min(100, progress)),
                 message: message || prev.message,
-                status:
-                  progress >= 90
-                    ? "saving"
-                    : progress > 0
-                      ? "generating"
-                      : prev.status,
+                status: progress >= 90 ? "saving" : "generating",
               }
             : prev
         )
       },
-      onCompleted: (_message) => {
+      onCompleted: (message) => {
         if (stopped) return
-        stopPolling()
-        // The backend may automatically launch after full-audience generation,
-        // so always take the authoritative state instead of forcing "ready".
-        void refresh()
+        markJobFinished(message)
       },
       onFailed: (errMsg) => {
         if (stopped) return
-        stopPolling()
         setError(errMsg)
-        void refresh()
+        void refresh().catch(() => undefined)
       },
     })
-
-    // If the socket never opens, fall back to polling after a short wait.
-    const fallbackTimer = window.setTimeout(() => {
-      if (!stopped && !wsLiveRef.current) startPolling()
-    }, 4000)
 
     return () => {
       stopped = true
       wsLiveRef.current = false
-      window.clearTimeout(fallbackTimer)
       sub.stop()
       stopPolling()
     }
-  }, [refresh, runId, runStatus, runWsUrl, runJobId, startPolling, stopPolling])
+  }, [
+    markJobFinished,
+    refresh,
+    runId,
+    runWsUrl,
+    runJobId,
+    startPolling,
+    stopPolling,
+  ])
 
   const isActive = !!run && ACTIVE.includes(run.status)
   useEffect(() => {
