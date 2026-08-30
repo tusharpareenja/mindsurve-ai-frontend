@@ -6,12 +6,12 @@ import {
   useContext,
   useEffect,
   useMemo,
-  useRef,
   useState,
   type ReactNode,
 } from "react"
 import { useAuth } from "@/context/AuthContext"
 import { chatsApi } from "@/lib/api/chats"
+import { ensureAccessToken } from "@/lib/api/client"
 import {
   ACTIVITY_LABELS,
   activityLabel,
@@ -21,9 +21,11 @@ import {
   type ChatActivityKind,
   type ServerChatActivity,
 } from "@/lib/chat-activity"
-
-const BUSY_POLL_MS = 4000
-const IDLE_POLL_MS = 15000
+import {
+  startUserEventSocket,
+  subscribeUserEvents,
+  type UserEvent,
+} from "@/lib/ws/user-events"
 
 type ChatActivityContextValue = {
   getActivity: (chatId: string) => ChatActivity | undefined
@@ -37,12 +39,6 @@ const ChatActivityContext = createContext<ChatActivityContextValue | null>(null)
 export function ChatActivityProvider({ children }: { children: ReactNode }) {
   const { isAuthenticated, isLoading: authLoading } = useAuth()
   const [activities, setActivities] = useState<Record<string, ChatActivity>>({})
-  const activitiesRef = useRef(activities)
-  const pollRef = useRef<number | null>(null)
-
-  useEffect(() => {
-    activitiesRef.current = activities
-  }, [activities])
 
   const hydrateFromServer = useCallback((rows: ServerChatActivity[]) => {
     setActivities((current) => mergeServerActivities(current, rows))
@@ -85,36 +81,65 @@ export function ChatActivityProvider({ children }: { children: ReactNode }) {
     [activities]
   )
 
-  const refreshServer = useCallback(async () => {
-    const rows = await chatsApi.listActivity()
-    hydrateFromServer(rows)
-  }, [hydrateFromServer])
-
-  const hasTrackedWork = Object.keys(activities).length > 0
-
   useEffect(() => {
     if (authLoading || !isAuthenticated) {
-      if (pollRef.current) {
-        window.clearInterval(pollRef.current)
-        pollRef.current = null
-      }
       setActivities({})
       return
     }
 
-    void refreshServer().catch(() => undefined)
-    const intervalMs = hasTrackedWork ? BUSY_POLL_MS : IDLE_POLL_MS
-    pollRef.current = window.setInterval(() => {
-      void refreshServer().catch(() => undefined)
-    }, intervalMs)
+    let cancelled = false
+    let sawSnapshot = false
+
+    const applyEvent = (event: UserEvent) => {
+      if (event.type === "activity.snapshot") {
+        sawSnapshot = true
+        hydrateFromServer(event.activities)
+        return
+      }
+      if (event.type !== "activity") return
+      if (event.active && event.kind) {
+        hydrateFromServer([
+          {
+            chat_id: event.chat_id,
+            kind: event.kind,
+            label: event.label || "",
+          },
+        ])
+        return
+      }
+      endActivity(event.chat_id, event.kind)
+    }
+
+    const unsub = subscribeUserEvents(applyEvent)
+    let stopRef: (() => void) | null = null
+
+    void (async () => {
+      await ensureAccessToken()
+      if (cancelled) return
+      const stopSocket = startUserEventSocket()
+      if (cancelled) {
+        stopSocket()
+        return
+      }
+      stopRef = stopSocket
+    })()
+
+    const fallback = window.setTimeout(() => {
+      if (cancelled || sawSnapshot) return
+      void chatsApi.listActivity()
+        .then((rows) => {
+          if (!cancelled) hydrateFromServer(rows)
+        })
+        .catch(() => undefined)
+    }, 3000)
 
     return () => {
-      if (pollRef.current) {
-        window.clearInterval(pollRef.current)
-        pollRef.current = null
-      }
+      cancelled = true
+      window.clearTimeout(fallback)
+      unsub()
+      stopRef?.()
     }
-  }, [authLoading, hasTrackedWork, isAuthenticated, refreshServer])
+  }, [authLoading, endActivity, hydrateFromServer, isAuthenticated])
 
   const value = useMemo(
     () => ({

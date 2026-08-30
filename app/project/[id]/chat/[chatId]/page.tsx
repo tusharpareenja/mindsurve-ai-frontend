@@ -497,6 +497,7 @@ function ChatPageInner() {
                 void renameChat(chatId, mapped.suggestedChatTitle)
               }
               if (
+                mapped.studyBrief.study_id &&
                 (mapped.assistantMessage.metadata as { auto_regenerate?: boolean } | undefined)
                   ?.auto_regenerate
               ) {
@@ -963,8 +964,9 @@ function ChatPageInner() {
         void renameChat(chatId, mapped.suggestedChatTitle)
       }
       const autoRegen = Boolean(
-        (mapped.assistantMessage.metadata as { auto_regenerate?: boolean } | undefined)
-          ?.auto_regenerate || dto.changed_fields?.includes("categories")
+        mapped.studyBrief.study_id &&
+          (mapped.assistantMessage.metadata as { auto_regenerate?: boolean } | undefined)
+            ?.auto_regenerate
       )
       if (autoRegen) {
         void (generationRun ? retryGeneration() : startGeneration()).catch(

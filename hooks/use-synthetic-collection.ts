@@ -5,6 +5,7 @@ import { useChatActivity } from "@/context/ChatActivityContext"
 import { ApiError } from "@/lib/api/types"
 import { syntheticCollectionApi } from "@/lib/api/syntheticCollection"
 import { subscribeJobEvents } from "@/lib/ws/job-events"
+import { subscribeUserEvents } from "@/lib/ws/user-events"
 import {
   mapResponseStats,
   type ResponseStats,
@@ -48,6 +49,15 @@ export function useSyntheticCollection(chatId: string, enabled: boolean) {
       throw err
     }
   }, [applyRun, chatId])
+
+  useEffect(() => {
+    if (!enabled || !chatId) return
+    return subscribeUserEvents((event) => {
+      if (event.type === "collection" && event.chat_id === chatId) {
+        applyRun(event.run)
+      }
+    })
+  }, [applyRun, chatId, enabled])
 
   useEffect(() => {
     if (!enabled) {

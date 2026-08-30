@@ -5,6 +5,7 @@ import { useChatActivity } from "@/context/ChatActivityContext"
 import { ApiError } from "@/lib/api/types"
 import { taskGenerationApi } from "@/lib/api/taskGeneration"
 import { subscribeJobEvents } from "@/lib/ws/job-events"
+import { subscribeUserEvents } from "@/lib/ws/user-events"
 import type {
   GenerationRun,
   GenerationStatus,
@@ -127,6 +128,15 @@ export function useTaskGeneration(chatId: string, enabled: boolean) {
       throw err
     }
   }, [applyRun, chatId])
+
+  useEffect(() => {
+    if (!enabled || !chatId) return
+    return subscribeUserEvents((event) => {
+      if (event.type === "generation" && event.chat_id === chatId) {
+        applyRun(event.run)
+      }
+    })
+  }, [applyRun, chatId, enabled])
 
   // Resume existing run when chat is already created.
   useEffect(() => {
