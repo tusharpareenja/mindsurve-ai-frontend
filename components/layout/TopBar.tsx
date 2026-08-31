@@ -1,7 +1,7 @@
 "use client"
 
 import Link from "next/link"
-import { Menu, Bell } from "lucide-react"
+import { Menu } from "lucide-react"
 import { BrandName } from "@/components/brand/BrandName"
 import { cn } from "@/lib/utils"
 
@@ -47,16 +47,6 @@ export function TopBar({ onOpenSidebar, sidebarOpen, title, className }: TopBarP
             <span className="hidden truncate text-sm text-gray-500 sm:inline">{title}</span>
           </>
         )}
-      </div>
-
-      <div className="flex items-center gap-1">
-        <button
-          type="button"
-          className="cursor-pointer inline-flex size-9 items-center justify-center rounded-lg text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-800"
-          aria-label="Notifications"
-        >
-          <Bell className="size-5" />
-        </button>
       </div>
     </header>
   )
