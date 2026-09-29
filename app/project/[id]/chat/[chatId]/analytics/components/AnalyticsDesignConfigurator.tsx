@@ -5,26 +5,55 @@
 import React, { useEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { motion } from "framer-motion"
-import { CheckCircle2, ChevronDown, Download, Eye, FileCode2, GitCompare, ImageIcon, Loader2, RotateCcw, Save, Sparkles, Trash2, Type, X } from "lucide-react"
+import { CheckCircle2, ChevronDown, Crown, Download, Eye, FileCode2, FolderPlus, Folders, GitCompare, ImageIcon, Loader2, RotateCcw, Save, Sparkles, Trash2, Type, X } from "lucide-react"
 import { renderLayersToCanvas } from "@/lib/canvas-export"
 import {
+  assignDesignCategory,
   compareSavedDesigns,
   createSavedDesign,
+  deleteDesignCategory,
   deleteSavedDesign,
+  downloadDesignCategoryPpt,
+  DesignCategoryPayload,
+  getSavedDesign,
+  listDesignCategories,
   listSavedDesigns,
+  removeDesignCategoryItem,
+  renameDesignCategory,
+  renameSavedDesign,
   SavedDesignConfigurationPayload,
   SavedDesignPayload,
   SavedDesignType,
   StudyType,
 } from "@/lib/api/StudyAPI"
 import {
+  AddToCategoryDialog,
+  DesignCategoryDrawer,
+  composeReportCombinationName,
+  nextReportCombinationName,
+  reportCombinationPrefix,
+  TopMixesCollection,
+} from "./DesignConfiguratorCollections"
+import { mixSignature, rankConfiguratorMixes } from "@/lib/analytics/rankConfiguratorMixes"
+import {
   compareLocalSavedDesigns,
   createLocalDesignId,
   createLocalSavedDesign,
   deleteLocalSavedDesign,
   listLocalSavedDesigns,
+  renameLocalSavedDesign,
   type LocalSavedDesignsStore,
 } from "@/lib/export/savedDesignLocalStorage"
+import {
+  assignLocalDesignCategory,
+  deleteLocalDesignCategory,
+  findLocalSavedDesign,
+  listLocalDesignCategories,
+  removeDesignFromLocalCategories,
+  removeLocalDesignCategoryItem,
+  renameDesignInLocalCategories,
+  renameLocalDesignCategory,
+} from "@/lib/export/designCategoryLocalStorage"
 import type { ApiDesignConstraint } from "@/lib/utils/designConstraintsStorage"
 import { imageCacheManager } from "@/lib/utils/imageCacheManager"
 import {
@@ -592,142 +621,6 @@ function getCategoriesForMetric(analysisData: any, metric: Metric, segment: Segm
       }
     })
     .filter((category: ConfiguratorCategory) => category.elements.length > 0)
-}
-
-function buildDefaultSelection(categories: ConfiguratorCategory[], isLayerStudy: boolean): Record<string, string> {
-  const selected: Record<string, string> = {}
-  const rankedCategories = [...categories]
-    .map((category) => ({
-      category,
-      best: [...category.elements].sort((a, b) => b.value - a.value)[0],
-    }))
-    .filter((item) => item.best)
-    .sort((a, b) => {
-      if (isLayerStudy) return a.category.zIndex - b.category.zIndex
-      return b.best.value - a.best.value
-    })
-
-  const limit = isLayerStudy ? rankedCategories.length : MAX_NON_LAYER_SELECTIONS
-  rankedCategories.slice(0, limit).forEach(({ category, best }) => {
-    selected[category.key] = best.id
-  })
-
-  return selected
-}
-
-function constraintRefKey(ref: { layer_id?: string; image_id?: string; layerId?: string; imageId?: string }): string | null {
-  const layerId = normalizeText(ref.layer_id ?? ref.layerId)
-  const imageId = normalizeText(ref.image_id ?? ref.imageId)
-  return layerId && imageId ? `${layerId}::${imageId}` : null
-}
-
-function elementConstraintKey(element: ConfiguratorElement): string | null {
-  return element.layerId && element.imageId ? `${element.layerId}::${element.imageId}` : null
-}
-
-function buildConflictPairSet(designConstraints: ApiDesignConstraint[]): Set<string> {
-  const pairs = new Set<string>()
-  designConstraints.forEach((constraint) => {
-    const anchors = Array.isArray(constraint.anchors) ? constraint.anchors : []
-    const blocked = Array.isArray(constraint.blocked) ? constraint.blocked : []
-    anchors.forEach((anchor) => {
-      const anchorKey = constraintRefKey(anchor)
-      if (!anchorKey) return
-      blocked.forEach((blockedRef) => {
-        const blockedKey = constraintRefKey(blockedRef)
-        if (!blockedKey || blockedKey === anchorKey) return
-        pairs.add(`${anchorKey}|${blockedKey}`)
-        pairs.add(`${blockedKey}|${anchorKey}`)
-      })
-    })
-  })
-  return pairs
-}
-
-function conflictsWithSelected(
-  element: ConfiguratorElement,
-  selectedElements: ConfiguratorElement[],
-  conflictPairs: Set<string>
-): boolean {
-  const elementKey = elementConstraintKey(element)
-  if (!elementKey) return false
-  return selectedElements.some((selected) => {
-    const selectedKey = elementConstraintKey(selected)
-    return Boolean(selectedKey && conflictPairs.has(`${elementKey}|${selectedKey}`))
-  })
-}
-
-function buildConstraintAwareLayerBestMix(
-  categories: ConfiguratorCategory[],
-  designConstraints: ApiDesignConstraint[]
-): Record<string, string> | null {
-  const conflictPairs = buildConflictPairSet(designConstraints)
-  if (conflictPairs.size === 0) {
-    return buildDefaultSelection(categories, true)
-  }
-
-  const conflictDegree = (category: ConfiguratorCategory) =>
-    category.elements.reduce((count, element) => {
-      const key = elementConstraintKey(element)
-      if (!key) return count
-      for (const pair of conflictPairs) {
-        if (pair.startsWith(`${key}|`)) count += 1
-      }
-      return count
-    }, 0)
-
-  const layerCategories = [...categories]
-    .filter((category) => category.elements.length > 0)
-    .sort((a, b) => {
-      const degreeDelta = conflictDegree(b) - conflictDegree(a)
-      if (degreeDelta !== 0) return degreeDelta
-      const sizeDelta = a.elements.length - b.elements.length
-      if (sizeDelta !== 0) return sizeDelta
-      return a.zIndex - b.zIndex
-    })
-    .map((category) => ({
-      category,
-      elements: [...category.elements].sort((a, b) => b.value - a.value),
-    }))
-
-  if (layerCategories.length === 0) return {}
-
-  const suffixBest = new Array(layerCategories.length + 1).fill(0)
-  for (let idx = layerCategories.length - 1; idx >= 0; idx -= 1) {
-    suffixBest[idx] = suffixBest[idx + 1] + Math.max(0, layerCategories[idx].elements[0]?.value ?? 0)
-  }
-
-  let bestScore = 0
-  let bestSelection: Record<string, string> = {}
-
-  const search = (
-    index: number,
-    selectedElements: ConfiguratorElement[],
-    selectedByCategory: Record<string, string>,
-    score: number
-  ) => {
-    if (score + suffixBest[index] <= bestScore) return
-
-    if (index === layerCategories.length) {
-      bestScore = score
-      bestSelection = { ...selectedByCategory }
-      return
-    }
-
-    const { category, elements } = layerCategories[index]
-    search(index + 1, selectedElements, selectedByCategory, score)
-    for (const element of elements) {
-      if (conflictsWithSelected(element, selectedElements, conflictPairs)) continue
-      selectedByCategory[category.key] = element.id
-      selectedElements.push(element)
-      search(index + 1, selectedElements, selectedByCategory, score + element.value)
-      selectedElements.pop()
-      delete selectedByCategory[category.key]
-    }
-  }
-
-  search(0, [], {}, 0)
-  return bestSelection
 }
 
 function normalizeLookupKey(value: unknown): string {
@@ -1389,6 +1282,7 @@ function SavedDesignComparePanel({
   onToggle,
   onCompare,
   onDelete,
+  canDelete = true,
 }: {
   isOpen: boolean
   savedDesigns: SavedDesignPayload[]
@@ -1400,6 +1294,7 @@ function SavedDesignComparePanel({
   onToggle: (designId: string) => void
   onCompare: () => void
   onDelete: (designId: string) => void
+  canDelete?: boolean
 }) {
   if (!isOpen) return null
 
@@ -1413,7 +1308,7 @@ function SavedDesignComparePanel({
             <h3 className="text-lg font-bold text-gray-900">Compare saved designs</h3>
             <p className="mt-1 text-sm text-gray-500">Select 2 to 4 designs to compare.</p>
           </div>
-          <button type="button" onClick={onClose} className="rounded-full p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700" aria-label="Close compare panel">
+          <button type="button" onClick={onClose} className="cursor-pointer rounded-full p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700" aria-label="Close compare panel">
             <X className="h-5 w-5" />
           </button>
         </div>
@@ -1453,21 +1348,25 @@ function SavedDesignComparePanel({
                         </span>
                       </span>
                     </label>
-                    <div className="mt-3 flex items-center justify-between">
+                    <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
                       {design.design_type === "input" ? (
                         <span className="rounded-full bg-blue-50 px-2.5 py-1 text-xs font-bold text-blue-600">Input Design</span>
                       ) : (
                         <span className="text-sm font-black tabular-nums text-gray-900">
-                          {formatValue(design.total_coefficient ?? design.configuration?.total_coefficient ?? 0, design.metric)}
+                          {formatValue(design.total_coefficient ?? design.configuration?.total_coefficient ?? 0, (design.metric as Metric) || "Top Down")}
                         </span>
                       )}
-                      <button
-                        type="button"
-                        onClick={() => onDelete(design.id)}
-                        className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs font-semibold text-red-500 hover:bg-red-50"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" /> Delete
-                      </button>
+                      <div className="flex items-center gap-1">
+                        {canDelete ? (
+                        <button
+                          type="button"
+                          onClick={() => onDelete(design.id)}
+                          className="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-lg px-2 text-xs font-semibold text-red-500 transition hover:bg-red-50 active:scale-[0.98]"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" /> Delete
+                        </button>
+                        ) : null}
+                      </div>
                     </div>
                   </div>
                 )
@@ -1482,7 +1381,7 @@ function SavedDesignComparePanel({
             type="button"
             onClick={onCompare}
             disabled={isComparing || selectedIds.length < 2 || selectedIds.length > 4}
-            className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-3 text-sm font-bold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+            className="inline-flex h-11 w-full cursor-pointer items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 text-sm font-bold text-white transition hover:bg-blue-700 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
           >
             {isComparing ? <Loader2 className="h-4 w-4 animate-spin" /> : <GitCompare className="h-4 w-4" />}
             Compare {selectedIds.length > 0 ? `(${selectedIds.length})` : ""}
@@ -1537,7 +1436,7 @@ function SavedInputDesignInsights({
         {rows.length === 0 ? (
           <p className="text-xs font-medium text-gray-500">No insight data saved for this design.</p>
         ) : (
-          rows.map((row: any) => (
+          rows.map((row: InputInsightRow) => (
             <div key={`${design.id}-${metric}-${row.segment_id}`} className="flex items-center justify-between rounded-xl bg-white px-3 py-2">
               <span className="min-w-0 truncate text-xs font-semibold text-gray-600">{row.label}</span>
               <span className={`ml-3 tabular-nums text-xs font-black ${row.value >= 0 ? "text-emerald-600" : "text-red-600"}`}>
@@ -1550,6 +1449,14 @@ function SavedInputDesignInsights({
       </div>
     </div>
   )
+}
+
+function getDesignMetric(design: SavedDesignPayload): Metric {
+  return resolveMetricLabel(design.metric) || "Top Down"
+}
+
+function getDesignTotal(design: SavedDesignPayload): number {
+  return toNumber(design.total_coefficient ?? design.configuration?.total_coefficient, 0)
 }
 
 function SavedDesignCompareOverlay({
@@ -1568,6 +1475,17 @@ function SavedDesignCompareOverlay({
   const [previewDesign, setPreviewDesign] = useState<SavedDesignPayload | null>(null)
   const [downloadingDesignId, setDownloadingDesignId] = useState<string | null>(null)
   const [highlightedElementKey, setHighlightedElementKey] = useState<string | null>(null)
+  const [openElementLists, setOpenElementLists] = useState<Record<string, boolean>>({})
+  const [expandedElementKey, setExpandedElementKey] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (designs.length === 0) return
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = "hidden"
+    return () => {
+      document.body.style.overflow = previousOverflow
+    }
+  }, [designs.length])
 
   const handleDownloadLayerDesign = async (design: SavedDesignPayload) => {
     if (design.study_type !== "layer" || downloadingDesignId) return
@@ -1588,133 +1506,490 @@ function SavedDesignCompareOverlay({
     }
   }
 
+  const designElements = useMemo(
+    () =>
+      designs.map((design) => ({
+        design,
+        elements: getSavedDesignElements(design, elementMediaLookup),
+        total: getDesignTotal(design),
+        metric: getDesignMetric(design),
+      })),
+    [designs, elementMediaLookup]
+  )
+
+  const comparisonRows = useMemo(() => {
+    const seen = new Set<string>()
+    const categories: string[] = []
+    for (const { elements } of designElements) {
+      for (const element of elements) {
+        const category = element.category || "Selection"
+        if (!seen.has(category)) {
+          seen.add(category)
+          categories.push(category)
+        }
+      }
+    }
+    return categories.map((category) => {
+      const cells = designElements.map(({ elements, metric }) => {
+        const match = elements.find((element) => (element.category || "Selection") === category) || null
+        return { element: match, metric }
+      })
+      const scored = cells
+        .map((cell) => cell.element?.value)
+        .filter((value): value is number => typeof value === "number" && Number.isFinite(value))
+      const bestValue = scored.length ? Math.max(...scored) : null
+      return { category, cells, bestValue }
+    })
+  }, [designElements])
+
+  const winnerId = useMemo(() => {
+    const scored = designElements.filter(({ design }) => design.design_type !== "input")
+    if (scored.length === 0) return null
+    const prefersLow = scored.every(({ metric }) => metric === "Response Time")
+    return scored.reduce((best, current) => {
+      if (prefersLow) return current.total < best.total ? current : best
+      return current.total > best.total ? current : best
+    }).design.id
+  }, [designElements])
+
   if (designs.length === 0) return null
 
   const previewElements = previewDesign ? getSavedDesignElements(previewDesign, elementMediaLookup) : []
   const previewIsLayer = previewDesign?.study_type === "layer"
+  const gridClass =
+    designs.length === 2 ? "lg:grid-cols-2" : designs.length === 3 ? "lg:grid-cols-3" : "lg:grid-cols-4"
 
   return (
     <BodyPortal>
-      <div role="dialog" aria-modal="true" aria-label="Saved design comparison" className="fixed inset-0 z-[220] overflow-y-auto bg-black p-4 text-white sm:p-6">
+      <div role="dialog" aria-modal="true" aria-label="Saved design comparison" className="fixed inset-0 z-[220] flex items-center justify-center p-3 sm:p-6">
         <button
           type="button"
+          className="absolute inset-0 bg-slate-950/50"
           onClick={onClose}
-          className="fixed right-4 top-4 z-20 flex h-10 w-10 items-center justify-center rounded-full bg-white/10 text-white transition hover:bg-white/20"
           aria-label="Close comparison"
+        />
+        <div
+          className="relative flex max-h-[calc(100vh-1.5rem)] w-full max-w-[96rem] flex-col overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-2xl sm:max-h-[calc(100vh-3rem)]"
+          onClick={(event) => event.stopPropagation()}
         >
-          <X className="h-6 w-6" />
-        </button>
-        <div className="mx-auto max-w-7xl pb-10 pt-10">
-        <div className="mb-6">
-          <h3 className="text-2xl font-black">Saved design comparison</h3>
-          <p className="mt-1 text-sm text-white/60">Showing {designs.length} saved designs side by side.</p>
-        </div>
-        <div className={`grid gap-5 ${designs.length === 2 ? "lg:grid-cols-2" : designs.length === 3 ? "lg:grid-cols-3" : "lg:grid-cols-4"}`}>
-          {designs.map((design) => {
-            const elements = getSavedDesignElements(design, elementMediaLookup)
-            const isLayer = design.study_type === "layer"
-            const compareBackgroundUrl = design.configuration?.show_layer_background
-              ? design.configuration?.background_url || getBackgroundUrl(analysisData)
-              : null
-            return (
-              <div key={design.id} className="rounded-3xl bg-white p-4 text-gray-900 shadow-xl">
-                <div className="mb-4 flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <h4 className="truncate text-lg font-black">{design.name}</h4>
-                    <p className="mt-1 text-xs font-semibold uppercase tracking-wide text-gray-500">
-                      {design.design_type === "input"
-                        ? "Input Design"
-                        : `${design.metric} · ${design.segment_label || design.configuration?.segment?.label || "Overall"}`}
-                    </p>
-                  </div>
-                  <div className="flex flex-shrink-0 items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setPreviewDesign(design)}
-                      className="flex h-9 w-9 items-center justify-center rounded-full bg-blue-50 text-blue-600 transition hover:bg-blue-100"
-                      aria-label={`Preview ${design.name}`}
-                    >
-                      <Eye className="h-4 w-4" />
-                    </button>
-                    {isLayer && (
-                      <button
-                        type="button"
-                        onClick={() => void handleDownloadLayerDesign(design)}
-                        disabled={downloadingDesignId === design.id}
-                        className="flex h-9 w-9 items-center justify-center rounded-full bg-blue-600 text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
-                        aria-label={`Download ${design.name}`}
-                      >
-                        {downloadingDesignId === design.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-                      </button>
-                    )}
-                  </div>
+          <div className="shrink-0 border-b border-slate-100 bg-gradient-to-r from-[#2674BA]/12 via-[#2674BA]/5 to-white px-4 py-4 sm:px-6">
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <div className="inline-flex items-center gap-2 rounded-full bg-[#2674BA]/10 px-3 py-1 text-xs font-semibold text-[#2674BA]">
+                  <GitCompare className="h-3.5 w-3.5" />
+                  Design comparison
                 </div>
-                <SelectionPreview
-                  selectedElements={elements}
-                  studyType={design.study_type}
-                  backgroundUrl={isLayer ? compareBackgroundUrl : design.configuration?.background_url || getBackgroundUrl(analysisData)}
-                  aspectRatio={design.configuration?.aspect_ratio || "9 / 16"}
-                />
-                {design.design_type === "input" ? (
-                  <SavedInputDesignInsights design={design} analysisData={analysisData} />
-                ) : (
-                  <div className="mt-4 rounded-2xl bg-gray-50 p-4">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-bold uppercase tracking-wider text-gray-500">Total Coefficient</span>
-                      <span className="text-xl font-black tabular-nums text-gray-900">
-                        {formatValue(design.total_coefficient ?? design.configuration?.total_coefficient ?? 0, design.metric)}
-                      </span>
-                    </div>
-                  </div>
-                )}
-                <details className="mt-4 rounded-2xl border border-gray-200">
-                  <summary className="cursor-pointer px-4 py-3 text-sm font-bold text-gray-900">Active Selection ({elements.length})</summary>
-                  <div className="space-y-3 border-t border-gray-100 p-4">
-                    {elements.map((element) => (
-                      <div key={`${design.id}-${element.id}`} className="flex items-center gap-3">
+                <h2 className="mt-2 text-lg font-bold text-slate-900 sm:text-2xl">Compare saved designs</h2>
+                <p className="mt-1 text-sm text-slate-500">
+                  {designs.length} designs · element coefficients shown for every selection
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={onClose}
+                className="cursor-pointer rounded-xl p-2 text-slate-500 transition-colors hover:bg-white/80 hover:text-slate-800"
+                aria-label="Close comparison"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+          </div>
+
+          <div className="min-h-0 flex-1 space-y-6 overflow-y-auto bg-slate-50/40 px-4 py-4 sm:px-6 sm:py-6">
+            <div className={`grid gap-5 ${gridClass}`}>
+              {designElements.map(({ design, elements }) => {
+                const isLayer = design.study_type === "layer"
+                const isWinner = winnerId === design.id
+                const compareBackgroundUrl = design.configuration?.show_layer_background
+                  ? design.configuration?.background_url || getBackgroundUrl(analysisData)
+                  : null
+                return (
+                  <div
+                    key={`preview-${design.id}`}
+                    className={`rounded-3xl border bg-white p-4 ${
+                      isWinner ? "border-[#2674BA]/35" : "border-slate-200"
+                    }`}
+                  >
+                    <div className="mb-3 flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <h4 className="truncate text-lg font-black text-slate-900">{design.name}</h4>
+                        <p className="mt-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                          {design.design_type === "input"
+                            ? "Input Design"
+                            : `${design.metric} · ${design.segment_label || design.configuration?.segment?.label || "Overall"}`}
+                        </p>
+                      </div>
+                      <div className="flex flex-shrink-0 items-center gap-2">
+                        {isWinner && (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-[#2674BA] px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">
+                            <Crown className="h-3 w-3" />
+                            Best
+                          </span>
+                        )}
                         <button
                           type="button"
-                          onClick={() => {
-                            if (!element.imageUrl) return
-                            setHighlightedElementKey(`${design.id}-${element.id}`)
-                            onImageOpen({ url: element.imageUrl, name: element.name })
-                          }}
-                          disabled={!element.imageUrl}
-                          className="flex h-10 w-10 flex-shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded-lg bg-gray-50 p-1 ring-1 ring-gray-100 transition hover:ring-blue-300 disabled:cursor-default disabled:hover:ring-gray-100"
+                          onClick={() => setPreviewDesign(design)}
+                          className="flex h-9 w-9 items-center justify-center rounded-full bg-blue-50 text-blue-600 transition hover:bg-blue-100"
+                          aria-label={`Preview ${design.name}`}
                         >
-                          {element.imageUrl ? (
-                            // eslint-disable-next-line @next/next/no-img-element
-                            <img src={getConfiguratorThumbnailUrl(element.imageUrl)} alt={element.name} className="h-full w-full object-contain" />
-                          ) : (
-                            <Type className="h-4 w-4 text-gray-400" />
-                          )}
+                          <Eye className="h-4 w-4" />
                         </button>
-                        <div className="min-w-0">
+                        {isLayer && (
                           <button
                             type="button"
-                            onClick={() => {
-                              if (!element.imageUrl) return
-                              setHighlightedElementKey(`${design.id}-${element.id}`)
-                              onImageOpen({ url: element.imageUrl, name: element.name })
-                            }}
-                            disabled={!element.imageUrl}
-                            className={`truncate text-left text-sm font-semibold transition disabled:cursor-default ${
-                              highlightedElementKey === `${design.id}-${element.id}`
-                                ? "text-blue-600"
-                                : "text-gray-900 hover:text-blue-600 disabled:hover:text-gray-900"
-                            }`}
+                            onClick={() => void handleDownloadLayerDesign(design)}
+                            disabled={downloadingDesignId === design.id}
+                            className="flex h-9 w-9 items-center justify-center rounded-full bg-blue-600 text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+                            aria-label={`Download ${design.name}`}
                           >
-                            {element.name}
+                            {downloadingDesignId === design.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
                           </button>
-                          <p className="truncate text-xs text-gray-500">{element.category}</p>
+                        )}
+                      </div>
+                    </div>
+                    <SelectionPreview
+                      selectedElements={elements}
+                      studyType={design.study_type || "grid"}
+                      backgroundUrl={isLayer ? compareBackgroundUrl : design.configuration?.background_url || getBackgroundUrl(analysisData)}
+                      aspectRatio={design.configuration?.aspect_ratio || "9 / 16"}
+                    />
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setOpenElementLists((current) => ({
+                          ...current,
+                          [design.id]: !(current[design.id] ?? true),
+                        }))
+                      }
+                      className="mt-3 flex w-full cursor-pointer items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-left"
+                      aria-expanded={openElementLists[design.id] ?? true}
+                    >
+                      <span className="text-sm font-bold text-slate-900">Image coefficients ({elements.length})</span>
+                      <ChevronDown
+                        className={`h-4 w-4 text-slate-500 transition-transform ${
+                          (openElementLists[design.id] ?? true) ? "rotate-180" : ""
+                        }`}
+                      />
+                    </button>
+                    {(openElementLists[design.id] ?? true) && (
+                      <div className="mt-2 space-y-2 rounded-xl border border-slate-200 p-3">
+                        {elements.length === 0 ? (
+                          <p className="text-sm text-slate-500">No elements saved on this design.</p>
+                        ) : (
+                          elements.map((element) => {
+                            const itemKey = `${design.id}-${element.id}`
+                            const isOpen = expandedElementKey === itemKey
+                            const share =
+                              getDesignTotal(design) !== 0
+                                ? Math.max(0, Math.min(100, (Math.abs(element.value) / Math.abs(getDesignTotal(design))) * 100))
+                                : 0
+                            return (
+                              <div key={itemKey} className="rounded-xl border border-slate-100">
+                                <button
+                                  type="button"
+                                  onClick={() => setExpandedElementKey(isOpen ? null : itemKey)}
+                                  className="flex w-full cursor-pointer items-center gap-3 px-2 py-2 text-left"
+                                  aria-expanded={isOpen}
+                                >
+                                  <span className="flex h-10 w-10 flex-shrink-0 items-center justify-center overflow-hidden rounded-lg bg-slate-50 p-1 ring-1 ring-slate-100">
+                                    {element.imageUrl ? (
+                                      // eslint-disable-next-line @next/next/no-img-element
+                                      <img src={getConfiguratorThumbnailUrl(element.imageUrl)} alt={element.name} className="h-full w-full object-contain" />
+                                    ) : (
+                                      <Type className="h-4 w-4 text-slate-400" />
+                                    )}
+                                  </span>
+                                  <span className="min-w-0 flex-1">
+                                    <span className="block truncate text-sm font-semibold text-slate-900">{element.name}</span>
+                                  </span>
+                                  {design.design_type !== "input" && (
+                                    <span
+                                      className={`shrink-0 text-sm font-bold tabular-nums ${
+                                        element.value >= 0 ? "text-emerald-600" : "text-red-600"
+                                      }`}
+                                    >
+                                      {element.value >= 0 ? "+" : ""}
+                                      {formatValue(element.value, getDesignMetric(design))}
+                                    </span>
+                                  )}
+                                  <ChevronDown
+                                    className={`h-4 w-4 shrink-0 text-slate-400 transition-transform ${isOpen ? "rotate-180" : ""}`}
+                                  />
+                                </button>
+                                {isOpen && (
+                                  <div className="space-y-2 border-t border-slate-100 px-3 py-3">
+                                    {element.imageUrl ? (
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setHighlightedElementKey(itemKey)
+                                          onImageOpen({ url: element.imageUrl!, name: element.name })
+                                        }}
+                                        className="flex w-full cursor-pointer items-center justify-center overflow-hidden rounded-xl bg-slate-50 p-3"
+                                      >
+                                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                                        <img src={getConfiguratorThumbnailUrl(element.imageUrl)} alt={element.name} className="max-h-40 object-contain" />
+                                      </button>
+                                    ) : (
+                                      <p className="text-xs text-slate-500">No image for this element.</p>
+                                    )}
+                                    {design.design_type !== "input" && (
+                                      <>
+                                        <div className="flex items-center justify-between text-sm">
+                                          <span className="text-slate-500">Coefficient</span>
+                                          <span className={`font-bold tabular-nums ${element.value >= 0 ? "text-emerald-600" : "text-red-600"}`}>
+                                            {element.value >= 0 ? "+" : ""}
+                                            {formatValue(element.value, getDesignMetric(design))}
+                                          </span>
+                                        </div>
+                                        <div className="h-1.5 overflow-hidden rounded-full bg-slate-100">
+                                          <div
+                                            className={`h-full rounded-full ${element.value >= 0 ? "bg-emerald-500" : "bg-red-400"}`}
+                                            style={{ width: `${Math.max(share, element.value !== 0 ? 6 : 0)}%` }}
+                                          />
+                                        </div>
+                                      </>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            )
+                          })
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+
+            <div className={`grid gap-3 ${gridClass}`}>
+              {designElements.map(({ design, total, metric }) => {
+                const isWinner = winnerId === design.id
+                return (
+                  <div
+                    key={`summary-${design.id}`}
+                    className={`rounded-2xl border bg-white p-4 ${
+                      isWinner ? "border-[#2674BA]/40 shadow-sm" : "border-slate-200"
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-bold text-slate-900">{design.name}</p>
+                        <p className="mt-0.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                          {design.design_type === "input"
+                            ? "Input Design"
+                            : `${design.metric} · ${design.segment_label || design.configuration?.segment?.label || "Overall"}`}
+                        </p>
+                      </div>
+                    </div>
+                    {design.design_type !== "input" && (
+                      <p className="mt-3 text-2xl font-black tabular-nums text-slate-900">
+                        {formatValue(total, metric)}
+                        <span className="ml-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                          total coefficient
+                        </span>
+                      </p>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+
+            {comparisonRows.length > 0 && (
+              <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                <div className="border-b border-slate-100 px-4 py-3">
+                  <h3 className="text-sm font-bold text-slate-900">Element coefficients</h3>
+                  <p className="mt-0.5 text-xs text-slate-500">
+                    Every selected element and its coefficient, lined up by category.
+                  </p>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[640px] border-collapse text-left text-sm">
+                    <thead>
+                      <tr className="bg-slate-50 text-[11px] font-bold uppercase tracking-wide text-slate-500">
+                        <th className="px-4 py-2.5">Category</th>
+                        {designElements.map(({ design }) => (
+                          <th key={`head-${design.id}`} className="px-4 py-2.5">
+                            {design.name}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {comparisonRows.map((row) => (
+                        <tr key={row.category} className="border-t border-slate-100 align-top">
+                          <td className="px-4 py-3 text-xs font-semibold text-slate-500">{row.category}</td>
+                          {row.cells.map((cell, index) => {
+                            const element = cell.element
+                            const isBest =
+                              element != null &&
+                              row.bestValue != null &&
+                              element.value === row.bestValue
+                            return (
+                              <td key={`${row.category}-${designElements[index].design.id}`} className="px-4 py-3">
+                                {element ? (
+                                  <div>
+                                    <p className="font-semibold text-slate-900">{element.name}</p>
+                                    {designElements[index].design.design_type !== "input" && (
+                                      <p
+                                        className={`mt-0.5 text-sm font-bold tabular-nums ${
+                                          element.value >= 0 ? "text-emerald-600" : "text-red-600"
+                                        }`}
+                                      >
+                                        {element.value >= 0 ? "+" : ""}
+                                        {formatValue(element.value, cell.metric)}
+                                        {isBest && row.cells.filter((item) => item.element).length > 1 && (
+                                          <span className="ml-1 text-[10px] font-bold uppercase tracking-wide text-[#2674BA]">
+                                            strongest
+                                          </span>
+                                        )}
+                                      </p>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <span className="text-xs text-slate-400">Not selected</span>
+                                )}
+                              </td>
+                            )
+                          })}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            <div className={`grid gap-5 ${gridClass}`}>
+              {designElements.map(({ design, elements, total, metric }) => {
+                const isWinner = winnerId === design.id
+                const listOpen = openElementLists[design.id] ?? true
+                return (
+                  <div
+                    key={design.id}
+                    className={`rounded-3xl border bg-white p-4 text-slate-900 shadow-sm ${
+                      isWinner ? "border-[#2674BA]/35" : "border-slate-200"
+                    }`}
+                  >
+                    {design.design_type === "input" ? (
+                      <SavedInputDesignInsights design={design} analysisData={analysisData} />
+                    ) : (
+                      <div className="rounded-2xl bg-slate-50 p-4">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-bold uppercase tracking-wider text-slate-500">Total Coefficient</span>
+                          <span className="text-xl font-black tabular-nums text-slate-900">
+                            {formatValue(total, metric)}
+                          </span>
                         </div>
                       </div>
-                    ))}
+                    )}
+                    <div className="mt-4 rounded-2xl border border-slate-200">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setOpenElementLists((current) => ({
+                            ...current,
+                            [design.id]: !(current[design.id] ?? true),
+                          }))
+                        }
+                        className="flex w-full cursor-pointer items-center justify-between px-4 py-3 text-left"
+                        aria-expanded={listOpen}
+                      >
+                        <span>
+                          <span className="block text-sm font-bold text-slate-900">Selected elements ({elements.length})</span>
+                          <span className="block text-xs text-slate-500">Coefficient for each element in this mix</span>
+                        </span>
+                        <ChevronDown className={`h-4 w-4 text-slate-400 transition-transform ${listOpen ? "rotate-180" : ""}`} />
+                      </button>
+                      {listOpen && (
+                        <div className="space-y-2 border-t border-slate-100 p-4">
+                          {elements.length === 0 ? (
+                            <p className="text-sm text-slate-500">No elements saved on this design.</p>
+                          ) : (
+                            elements.map((element) => {
+                              const itemKey = `${design.id}-${element.id}`
+                              const isOpen = expandedElementKey === itemKey
+                              const share = total !== 0 ? Math.max(0, Math.min(100, (Math.abs(element.value) / Math.abs(total)) * 100)) : 0
+                              return (
+                                <div key={itemKey} className="rounded-xl border border-slate-100">
+                                  <button
+                                    type="button"
+                                    onClick={() => setExpandedElementKey(isOpen ? null : itemKey)}
+                                    className="flex w-full cursor-pointer items-center gap-3 px-2 py-2 text-left"
+                                    aria-expanded={isOpen}
+                                  >
+                                    <span className="flex h-10 w-10 flex-shrink-0 items-center justify-center overflow-hidden rounded-lg bg-slate-50 p-1 ring-1 ring-slate-100">
+                                      {element.imageUrl ? (
+                                        // eslint-disable-next-line @next/next/no-img-element
+                                        <img src={getConfiguratorThumbnailUrl(element.imageUrl)} alt={element.name} className="h-full w-full object-contain" />
+                                      ) : (
+                                        <Type className="h-4 w-4 text-slate-400" />
+                                      )}
+                                    </span>
+                                    <span className="min-w-0 flex-1">
+                                      <span className="block truncate text-sm font-semibold text-slate-900">{element.name}</span>
+                                    </span>
+                                    {design.design_type !== "input" && (
+                                      <span
+                                        className={`shrink-0 text-sm font-bold tabular-nums ${
+                                          element.value >= 0 ? "text-emerald-600" : "text-red-600"
+                                        }`}
+                                      >
+                                        {element.value >= 0 ? "+" : ""}
+                                        {formatValue(element.value, metric)}
+                                      </span>
+                                    )}
+                                    <ChevronDown className={`h-4 w-4 shrink-0 text-slate-400 transition-transform ${isOpen ? "rotate-180" : ""}`} />
+                                  </button>
+                                  {isOpen && (
+                                    <div className="space-y-2 border-t border-slate-100 px-3 py-3">
+                                      {element.imageUrl ? (
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setHighlightedElementKey(itemKey)
+                                            onImageOpen({ url: element.imageUrl!, name: element.name })
+                                          }}
+                                          className="flex w-full cursor-pointer items-center justify-center overflow-hidden rounded-xl bg-slate-50 p-3"
+                                        >
+                                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                                          <img src={getConfiguratorThumbnailUrl(element.imageUrl)} alt={element.name} className="max-h-40 object-contain" />
+                                        </button>
+                                      ) : (
+                                        <p className="text-xs text-slate-500">No image for this element.</p>
+                                      )}
+                                      {design.design_type !== "input" && (
+                                        <>
+                                          <div className="flex items-center justify-between text-sm">
+                                            <span className="text-slate-500">Coefficient</span>
+                                            <span className={`font-bold tabular-nums ${element.value >= 0 ? "text-emerald-600" : "text-red-600"}`}>
+                                              {element.value >= 0 ? "+" : ""}
+                                              {formatValue(element.value, metric)}
+                                            </span>
+                                          </div>
+                                          <div className="h-1.5 overflow-hidden rounded-full bg-slate-100">
+                                            <div
+                                              className={`h-full rounded-full ${element.value >= 0 ? "bg-emerald-500" : "bg-red-400"}`}
+                                              style={{ width: `${Math.max(share, element.value !== 0 ? 6 : 0)}%` }}
+                                            />
+                                          </div>
+                                        </>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              )
+                            })
+                          )}
+                        </div>
+                      )}
+                    </div>
                   </div>
-                </details>
-              </div>
-            )
-          })}
+                )
+              })}
+            </div>
+          </div>
         </div>
       </div>
       <PreviewFullscreenModal
@@ -1724,14 +1999,13 @@ function SavedDesignCompareOverlay({
         {previewDesign && (
           <SelectionPreview
             selectedElements={previewElements}
-            studyType={previewDesign.study_type}
+            studyType={previewDesign.study_type || "grid"}
             backgroundUrl={previewIsLayer ? (previewDesign.configuration?.show_layer_background ? previewDesign.configuration?.background_url || null : null) : previewDesign.configuration?.background_url || null}
             aspectRatio={previewDesign.configuration?.aspect_ratio || "9 / 16"}
             size="fullscreen"
           />
         )}
       </PreviewFullscreenModal>
-      </div>
     </BodyPortal>
   )
 }
@@ -1833,7 +2107,19 @@ interface AnalyticsDesignConfiguratorProps {
   onExportHtml?: () => void
   isExportingHtml?: boolean
   exportHtmlStage?: "preparing" | "embedding" | "generating" | "done"
+  exportHtmlMessage?: string
+  canSaveDesigns?: boolean
 }
+
+const CATEGORY_PPT_MESSAGES = [
+  "Getting this category…",
+  "Using the analytics already on this page…",
+  "Building combination slides…",
+  "Fetching design artwork…",
+  "Exporting your report…",
+  "Still working — hang tight…",
+  "Preparing the download…",
+]
 
 export function AnalyticsDesignConfigurator({
   analysisData,
@@ -1848,6 +2134,8 @@ export function AnalyticsDesignConfigurator({
   onExportHtml,
   isExportingHtml = false,
   exportHtmlStage = "preparing",
+  exportHtmlMessage,
+  canSaveDesigns = true,
 }: AnalyticsDesignConfiguratorProps) {
   const isLocalPersistence = persistence === "local"
   const initialSavedDesignsRef = useRef<LocalSavedDesignsStore>(
@@ -1858,7 +2146,7 @@ export function AnalyticsDesignConfigurator({
   const [isInputDesignMode, setIsInputDesignMode] = useState(false)
   const [showInputInsights, setShowInputInsights] = useState(false)
   const [activeInputInsightMetric, setActiveInputInsightMetric] = useState<Metric>("Top Down")
-  const savedDesignType: SavedDesignType = isInputDesignMode ? "input" : "configurator"
+  const savedDesignType: "configurator" | "input" = isInputDesignMode ? "input" : "configurator"
   const [activeMetric, setActiveMetric] = useState<Metric>("Top Down")
   const segmentOptions = useMemo(
     () => getAvailableSegmentOptions(analysisData || {}, activeMetric),
@@ -1901,6 +2189,22 @@ export function AnalyticsDesignConfigurator({
   const [isComparingDesigns, setIsComparingDesigns] = useState(false)
   const [compareError, setCompareError] = useState<string | null>(null)
   const [compareDesigns, setCompareDesigns] = useState<SavedDesignPayload[]>([])
+  const [designCategories, setDesignCategories] = useState<DesignCategoryPayload[]>([])
+  const [isLoadingCategories, setIsLoadingCategories] = useState(false)
+  const [isCategoryPanelOpen, setIsCategoryPanelOpen] = useState(false)
+  const [isAddCategoryOpen, setIsAddCategoryOpen] = useState(false)
+  const [addCategoryMode, setAddCategoryMode] = useState<"current" | "existing">("current")
+  const [addCategoryTargetIds, setAddCategoryTargetIds] = useState<string[]>([])
+  const [categoryDesignName, setCategoryDesignName] = useState("")
+  const [isAssigningCategory, setIsAssigningCategory] = useState(false)
+  const [categoryError, setCategoryError] = useState<string | null>(null)
+  const [downloadingCategoryId, setDownloadingCategoryId] = useState<string | null>(null)
+  const [categoryPptMessageIndex, setCategoryPptMessageIndex] = useState(0)
+  const [categoryPptError, setCategoryPptError] = useState<string | null>(null)
+  const [categoryNotice, setCategoryNotice] = useState<string | null>(null)
+  const [focusCategoryId, setFocusCategoryId] = useState<string | null>(null)
+  const [openedDesign, setOpenedDesign] = useState<{ id: string; signature: string } | null>(null)
+  const [isTopMixesOpen, setIsTopMixesOpen] = useState(false)
   const [activeSelectionImage, setActiveSelectionImage] = useState<{ url: string; name: string } | null>(null)
   const [highlightedSelectionId, setHighlightedSelectionId] = useState<string | null>(null)
   const previewCaptureRef = useRef<HTMLDivElement>(null)
@@ -1960,6 +2264,80 @@ export function AnalyticsDesignConfigurator({
     void loadSavedDesigns()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [studyId, savedDesignType])
+
+  useEffect(() => {
+    if (!studyId) return
+    if (isLocalPersistence) {
+      setDesignCategories(listLocalDesignCategories(studyId))
+      return
+    }
+    let cancelled = false
+    setIsLoadingCategories(true)
+    void listDesignCategories(studyId)
+      .then((next) => {
+        if (!cancelled) setDesignCategories(next)
+      })
+      .catch((error) => {
+        if (!cancelled) setCategoryError((error as Error)?.message || "Failed to load categories")
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoadingCategories(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [isLocalPersistence, studyId])
+
+  useEffect(() => {
+    if (!downloadingCategoryId) return
+    const timer = window.setInterval(() => {
+      setCategoryPptMessageIndex((index) => (index + 1) % CATEGORY_PPT_MESSAGES.length)
+    }, 1600)
+    return () => window.clearInterval(timer)
+  }, [downloadingCategoryId])
+
+  const handleDownloadCategory = async (categoryId: string) => {
+    if (!studyId || downloadingCategoryId) return
+    if (typeof navigator !== "undefined" && navigator.onLine === false) {
+      setCategoryPptError("You appear to be offline. Reconnect and try the download again.")
+      return
+    }
+    if (isLocalPersistence) {
+      setCategoryPptError("This report can be downloaded after the category is saved to the study.")
+      return
+    }
+    const category = designCategories.find((item) => item.id === categoryId)
+    if (!category || (category.items?.length ?? 0) === 0) {
+      setCategoryPptError("Add at least one combination to this category before downloading.")
+      return
+    }
+    setCategoryPptError(null)
+    setDownloadingCategoryId(categoryId)
+    setCategoryPptMessageIndex(0)
+    try {
+      const { blob, filename } = await downloadDesignCategoryPpt(studyId, categoryId, analysisData)
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement("a")
+      anchor.href = url
+      anchor.download = filename || "Combination Readout.pptx"
+      anchor.rel = "noopener"
+      anchor.style.display = "none"
+      document.body.appendChild(anchor)
+      anchor.click()
+      window.setTimeout(() => {
+        anchor.remove()
+        URL.revokeObjectURL(url)
+      }, 1000)
+    } catch (error) {
+      const message = (error as Error)?.message || "Failed to download this report. Please try again."
+      setCategoryPptError(message === "Failed to fetch"
+        ? "The download could not reach the server. Check your connection and try again."
+        : message)
+    } finally {
+      setDownloadingCategoryId(null)
+      setCategoryPptMessageIndex(0)
+    }
+  }
 
   useEffect(() => {
     if (!isLayerStudy) return
@@ -2047,6 +2425,12 @@ export function AnalyticsDesignConfigurator({
     const timer = window.setTimeout(() => setAssistantLoadNotice(null), 4500)
     return () => window.clearTimeout(timer)
   }, [assistantLoadNotice])
+
+  useEffect(() => {
+    if (!categoryNotice) return
+    const timer = window.setTimeout(() => setCategoryNotice(null), 4500)
+    return () => window.clearTimeout(timer)
+  }, [categoryNotice])
 
   const selectedElements = useMemo(
     () =>
@@ -2195,6 +2579,21 @@ export function AnalyticsDesignConfigurator({
     return candidate
   }, [isInputDesignMode, savedDesigns])
 
+  const elementCombinationName = useMemo(() => {
+    const usedNames = new Set(savedDesigns.map((design) => design.name.trim().toLowerCase()))
+    const parts = selectedElements.map((element) => element.name.trim()).filter(Boolean)
+    const base = (parts.length > 0 ? parts.join(" · ") : defaultSavedDesignName).slice(0, 255).trimEnd()
+    if (!usedNames.has(base.toLowerCase())) return base
+    let index = 2
+    while (index < 1000) {
+      const suffix = ` ${index}`
+      const candidate = `${base.slice(0, Math.max(1, 255 - suffix.length)).trimEnd()}${suffix}`
+      if (!usedNames.has(candidate.toLowerCase())) return candidate
+      index += 1
+    }
+    return base
+  }, [defaultSavedDesignName, savedDesigns, selectedElements])
+
   const handleSelect = (category: ConfiguratorCategory, element: ConfiguratorElement) => {
     setSelectedByCategory((current) => {
       const next = { ...current }
@@ -2241,21 +2640,48 @@ export function AnalyticsDesignConfigurator({
     }))
   }
 
-  const handleBestMix = () => {
-    const bestSelection = isLayerStudy
-      ? buildConstraintAwareLayerBestMix(categories, designConstraints)
-      : buildDefaultSelection(categories, false)
-    if (!bestSelection) {
-      alert("No valid Best Mix exists with the current design constraints. Please relax constraints or review layer images.")
-      return
-    }
-    setSelectedByCategory(bestSelection)
+  const rankedMixes = useMemo(
+    () => rankConfiguratorMixes({
+      categories,
+      isLayer: isLayerStudy,
+      designConstraints,
+      limit: 5,
+    }),
+    [categories, designConstraints, isLayerStudy]
+  )
+  const currentSelectionSignature = mixSignature(selectedByCategory)
+  const matchingSavedDesign = useMemo(
+    () => savedDesigns.find((design) => mixSignature(design.configuration?.selected_by_category || {}) === currentSelectionSignature) || null,
+    [currentSelectionSignature, savedDesigns]
+  )
+  const categorySavedDesign = useMemo(() => {
+    if (!matchingSavedDesign) return null
+    const listed = designCategories.some((category) => (
+      category.items.some((item) => item.saved_design_id === matchingSavedDesign.id)
+    ))
+    return listed ? matchingSavedDesign : null
+  }, [designCategories, matchingSavedDesign])
+  const previewDesignId = matchingSavedDesign?.id
+    || (openedDesign && openedDesign.signature === currentSelectionSignature ? openedDesign.id : null)
+
+  const applyConfiguratorSelection = (selection: Record<string, string>) => {
+    setSelectedByCategory(selection)
     setOpenCategoryNames(
       categories.reduce<Record<string, boolean>>((next, category) => {
-        next[category.key] = Boolean(bestSelection[category.key])
+        next[category.key] = Boolean(selection[category.key])
         return next
       }, {})
     )
+    setIsSelectionOpen(true)
+  }
+
+  const handleBestMix = () => {
+    const bestSelection = rankedMixes[0]?.selection
+    if (!bestSelection || Object.keys(bestSelection).length === 0) {
+      alert("No valid Best Mix exists with the current design constraints. Please relax constraints or review layer images.")
+      return
+    }
+    applyConfiguratorSelection(bestSelection)
   }
 
   const handleDownloadPreview = async () => {
@@ -2365,8 +2791,8 @@ export function AnalyticsDesignConfigurator({
         createLocalSavedDesign(studyId, saved, initialSavedDesignsRef.current)
         initialSavedDesignsRef.current = {
           ...initialSavedDesignsRef.current,
-          [savedDesignType]: [saved, ...((initialSavedDesignsRef.current[savedDesignType] as SavedDesignPayload[] | undefined) || [])],
-        } as LocalSavedDesignsStore
+          [savedDesignType]: [saved, ...(initialSavedDesignsRef.current[savedDesignType] || [])],
+        }
         setSavedDesigns((current) => [saved, ...current])
       } else {
         const saved = await createSavedDesign(studyId, trimmedName, currentSavedDesignConfiguration, savedDesignType)
@@ -2419,6 +2845,18 @@ export function AnalyticsDesignConfigurator({
     const confirmed = window.confirm("Delete this saved design?")
     if (!confirmed) return
 
+    const previousDesigns = savedDesigns
+    const previousCompareIds = selectedCompareIds
+    const previousCompareDesigns = compareDesigns
+    const previousCategories = designCategories
+    setSavedDesigns((current) => current.filter((design) => design.id !== designId))
+    setSelectedCompareIds((current) => current.filter((id) => id !== designId))
+    setCompareDesigns((current) => current.filter((design) => design.id !== designId))
+    setDesignCategories((current) => current.map((category) => ({
+      ...category,
+      items: category.items.filter((item) => item.saved_design_id !== designId),
+    })))
+
     try {
       if (isLocalPersistence) {
         deleteLocalSavedDesign(studyId, designId, initialSavedDesignsRef.current)
@@ -2427,16 +2865,291 @@ export function AnalyticsDesignConfigurator({
           input: initialSavedDesignsRef.current.input.filter((design) => design.id !== designId),
           deleted_ids: Array.from(new Set([...(initialSavedDesignsRef.current.deleted_ids || []), designId])),
         }
+        removeDesignFromLocalCategories(studyId, designId)
       } else {
         await deleteSavedDesign(studyId, designId)
       }
-      setSavedDesigns((current) => current.filter((design) => design.id !== designId))
-      setSelectedCompareIds((current) => current.filter((id) => id !== designId))
-      setCompareDesigns((current) => current.filter((design) => design.id !== designId))
     } catch (error) {
+      setSavedDesigns(previousDesigns)
+      setSelectedCompareIds(previousCompareIds)
+      setCompareDesigns(previousCompareDesigns)
+      setDesignCategories(previousCategories)
       setCompareError((error as Error)?.message || "Failed to delete saved design")
     }
   }
+
+  const upsertDesignCategory = (category: DesignCategoryPayload) => {
+    setDesignCategories((current) => {
+      const index = current.findIndex((item) => item.id === category.id)
+      const next = index === -1 ? [...current, category] : current.map((item) => (item.id === category.id ? category : item))
+      return [...next].sort((a, b) => a.position - b.position || a.name.localeCompare(b.name))
+    })
+    setFocusCategoryId(category.id)
+  }
+
+  const openAddCurrentCategory = () => {
+    setAddCategoryMode("current")
+    setAddCategoryTargetIds([])
+    const usedNames = [
+      ...savedDesigns.map((design) => design.name),
+      ...designCategories.flatMap((category) => category.items.map((item) => item.name)),
+    ]
+    const reportName = isInputDesignMode ? null : nextReportCombinationName(activeMetric, usedNames)
+    setCategoryDesignName(reportName || elementCombinationName)
+    setCategoryError(null)
+    setIsAddCategoryOpen(true)
+  }
+
+  const handleAssignCategory = async (input: { categoryId?: string; categoryName?: string }) => {
+    if (addCategoryMode === "current" && !hasPreviewContent) {
+      setCategoryError("Select at least one element before adding it to a category.")
+      return
+    }
+    const namePrefix = isInputDesignMode ? null : reportCombinationPrefix(activeMetric)
+    const trimmedCombinationName = namePrefix
+      ? composeReportCombinationName(namePrefix, categoryDesignName).replace(/\s+/g, " ").trim()
+      : categoryDesignName.replace(/\s+/g, " ").trim()
+    if (addCategoryMode === "current" && !categorySavedDesign && !trimmedCombinationName) {
+      setCategoryError("Enter a combination name.")
+      return
+    }
+    setIsAssigningCategory(true)
+    setCategoryError(null)
+    try {
+      if (isLocalPersistence) {
+        let designs: SavedDesignPayload[] = []
+        if (addCategoryMode === "existing") {
+          designs = savedDesigns.filter((design) => addCategoryTargetIds.includes(design.id))
+        } else if (categorySavedDesign) {
+          designs = [categorySavedDesign]
+        } else if (matchingSavedDesign) {
+          let design = matchingSavedDesign
+          if (design.name !== trimmedCombinationName) {
+            design = renameLocalSavedDesign(studyId, design.id, trimmedCombinationName, initialSavedDesignsRef.current)
+            renameDesignInLocalCategories(studyId, design.id, design.name)
+            initialSavedDesignsRef.current = {
+              ...initialSavedDesignsRef.current,
+              configurator: initialSavedDesignsRef.current.configurator.map((item) => (
+                item.id === design.id ? { ...item, name: design.name } : item
+              )),
+              input: initialSavedDesignsRef.current.input.map((item) => (
+                item.id === design.id ? { ...item, name: design.name } : item
+              )),
+            }
+            applySavedDesignName(design.id, design.name)
+          }
+          designs = [design]
+        } else {
+          const now = new Date().toISOString()
+          const saved: SavedDesignPayload = {
+            id: createLocalDesignId(),
+            study_id: studyId,
+            name: trimmedCombinationName,
+            design_type: savedDesignType,
+            study_type: currentSavedDesignConfiguration.study_type,
+            metric: activeMetric,
+            segment_label: activeSegment?.label ?? null,
+            selection_count: selectedElements.length,
+            total_coefficient: totalCoefficient,
+            configuration: currentSavedDesignConfiguration,
+            created_at: now,
+            updated_at: now,
+          }
+          createLocalSavedDesign(studyId, saved, initialSavedDesignsRef.current)
+          initialSavedDesignsRef.current = {
+            ...initialSavedDesignsRef.current,
+            [savedDesignType]: [saved, ...(initialSavedDesignsRef.current[savedDesignType] || [])],
+          }
+          setSavedDesigns((current) => [saved, ...current])
+          designs = [saved]
+        }
+        const category = assignLocalDesignCategory({
+          studyId,
+          categoryId: input.categoryId,
+          categoryName: input.categoryName,
+          designs,
+        })
+        setDesignCategories(listLocalDesignCategories(studyId))
+        setFocusCategoryId(category.id)
+      } else {
+        let reusedDesignId = addCategoryMode === "existing"
+          ? null
+          : categorySavedDesign?.id || matchingSavedDesign?.id || null
+        if (addCategoryMode === "current" && matchingSavedDesign && !categorySavedDesign && matchingSavedDesign.name !== trimmedCombinationName) {
+          const updated = await renameSavedDesign(studyId, matchingSavedDesign.id, trimmedCombinationName)
+          applySavedDesignName(matchingSavedDesign.id, updated.name)
+          reusedDesignId = updated.id
+        }
+        const result = await assignDesignCategory(studyId, {
+          category_id: input.categoryId,
+          category_name: input.categoryName,
+          saved_design_ids: addCategoryMode === "existing"
+            ? addCategoryTargetIds
+            : reusedDesignId
+              ? [reusedDesignId]
+              : [],
+          design: addCategoryMode === "current" && !reusedDesignId
+            ? {
+                name: trimmedCombinationName,
+                design_type: savedDesignType,
+                configuration: currentSavedDesignConfiguration,
+              }
+            : undefined,
+        })
+        upsertDesignCategory(result.category)
+        if (result.created_design) {
+          setSavedDesigns((current) => [result.created_design as SavedDesignPayload, ...current])
+        }
+      }
+      setIsAddCategoryOpen(false)
+      setIsCategoryPanelOpen(true)
+      setCategoryNotice("Added to report builder")
+    } catch (error) {
+      setCategoryError((error as Error)?.message || "Failed to add to report builder")
+    } finally {
+      setIsAssigningCategory(false)
+    }
+  }
+
+  const applySavedDesignName = (savedDesignId: string, name: string) => {
+    setSavedDesigns((current) => current.map((design) => (
+      design.id === savedDesignId ? { ...design, name } : design
+    )))
+    setCompareDesigns((current) => current.map((design) => (
+      design.id === savedDesignId ? { ...design, name } : design
+    )))
+    setDesignCategories((current) => current.map((category) => ({
+      ...category,
+      items: category.items.map((item) => (
+        item.saved_design_id === savedDesignId ? { ...item, name } : item
+      )),
+    })))
+  }
+
+  const handleRenameSavedDesign = async (savedDesignId: string, name: string) => {
+    const previousDesigns = savedDesigns
+    const previousCompareDesigns = compareDesigns
+    const previousCategories = designCategories
+    applySavedDesignName(savedDesignId, name)
+    try {
+      if (isLocalPersistence) {
+        const updated = renameLocalSavedDesign(studyId, savedDesignId, name, initialSavedDesignsRef.current)
+        renameDesignInLocalCategories(studyId, savedDesignId, updated.name)
+        initialSavedDesignsRef.current = {
+          ...initialSavedDesignsRef.current,
+          configurator: initialSavedDesignsRef.current.configurator.map((design) => (
+            design.id === savedDesignId ? { ...design, name: updated.name } : design
+          )),
+          input: initialSavedDesignsRef.current.input.map((design) => (
+            design.id === savedDesignId ? { ...design, name: updated.name } : design
+          )),
+        }
+        applySavedDesignName(savedDesignId, updated.name)
+      } else {
+        const updated = await renameSavedDesign(studyId, savedDesignId, name)
+        applySavedDesignName(savedDesignId, updated.name)
+      }
+    } catch (error) {
+      setSavedDesigns(previousDesigns)
+      setCompareDesigns(previousCompareDesigns)
+      setDesignCategories(previousCategories)
+      setCategoryError((error as Error)?.message || "Failed to rename saved design")
+      throw error
+    }
+  }
+
+  const handleRenameCategory = async (categoryId: string, name: string) => {
+    const previous = designCategories
+    setDesignCategories((current) => current.map((category) => (
+      category.id === categoryId ? { ...category, name } : category
+    )))
+    try {
+      const updated = isLocalPersistence
+        ? renameLocalDesignCategory(studyId, categoryId, name)
+        : await renameDesignCategory(studyId, categoryId, name)
+      upsertDesignCategory(updated)
+    } catch (error) {
+      setDesignCategories(previous)
+      setCategoryError((error as Error)?.message || "Failed to rename category")
+      throw error
+    }
+  }
+
+  const handleDeleteCategory = async (categoryId: string) => {
+    const category = designCategories.find((item) => item.id === categoryId)
+    const confirmed = window.confirm(`Delete “${category?.name || "this category"}”? Combinations stay in Compare Saved.`)
+    if (!confirmed) return
+    const previous = designCategories
+    setDesignCategories((current) => current.filter((item) => item.id !== categoryId))
+    if (focusCategoryId === categoryId) setFocusCategoryId(null)
+    try {
+      if (isLocalPersistence) deleteLocalDesignCategory(studyId, categoryId)
+      else await deleteDesignCategory(studyId, categoryId)
+    } catch (error) {
+      setDesignCategories(previous)
+      setCategoryError((error as Error)?.message || "Failed to delete category")
+    }
+  }
+
+  const handleRemoveCategoryItem = async (categoryId: string, savedDesignId: string) => {
+    const confirmed = window.confirm("Remove this combination from the category? The saved design itself is kept.")
+    if (!confirmed) return
+    const previous = designCategories
+    setDesignCategories((current) => current.map((category) => (
+      category.id === categoryId
+        ? { ...category, items: category.items.filter((item) => item.saved_design_id !== savedDesignId) }
+        : category
+    )))
+    try {
+      if (isLocalPersistence) removeLocalDesignCategoryItem(studyId, categoryId, savedDesignId)
+      else await removeDesignCategoryItem(studyId, categoryId, savedDesignId)
+    } catch (error) {
+      setDesignCategories(previous)
+      setCategoryError((error as Error)?.message || "Failed to remove combination")
+    }
+  }
+
+  const handleOpenCategoryItem = async (savedDesignId: string) => {
+    try {
+      let design = savedDesigns.find((item) => item.id === savedDesignId)
+      if (!design && isLocalPersistence) {
+        design = findLocalSavedDesign({
+          configurator: listLocalSavedDesigns(studyId, "configurator", initialSavedDesignsRef.current),
+          input: listLocalSavedDesigns(studyId, "input", initialSavedDesignsRef.current),
+        }, savedDesignId)
+      }
+      if (!design) design = await getSavedDesign(studyId, savedDesignId)
+      const selection = design.configuration?.selected_by_category || {}
+      const metric = METRIC_OPTIONS.some((option) => option.value === design.metric)
+        ? (design.metric as Metric)
+        : activeMetric
+      const segmentOptionsForMetric = getAvailableSegmentOptions(analysisData || {}, metric)
+      const segment = design.configuration?.segment
+      const segmentMatch = segmentOptionsForMetric.find((option) => option.id === segment?.id)
+        || segmentOptionsForMetric.find((option) => option.label === (segment?.label || design.segment_label))
+      setIsInputDesignMode(design.design_type === "input")
+      setActiveMetric(metric)
+      if (segmentMatch) setActiveSegmentId(segmentMatch.id)
+      applyConfiguratorSelection(selection)
+      if (isLayerStudy) setShowLayerBackground(Boolean(design.configuration?.show_layer_background && backgroundUrl))
+      setOpenedDesign({ id: design.id, signature: mixSignature(selection) })
+      setIsCategoryPanelOpen(false)
+      setCategoryNotice(`Opened ${design.name}`)
+    } catch (error) {
+      setCategoryError((error as Error)?.message || "Failed to open combination")
+    }
+  }
+
+  const disabledCategoryIds = designCategories
+    .filter((category) => {
+      const ids = addCategoryMode === "existing"
+        ? addCategoryTargetIds
+        : categorySavedDesign
+          ? [categorySavedDesign.id]
+          : []
+      return ids.length > 0 && ids.every((id) => category.items.some((item) => item.saved_design_id === id))
+    })
+    .map((category) => category.id)
 
   if (!analysisData || categories.length === 0) return null
 
@@ -2447,127 +3160,135 @@ export function AnalyticsDesignConfigurator({
     <motion.section
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
-      className="mb-10"
+      className="mb-10 [&_button:not(:disabled)]:cursor-pointer [&_button:disabled]:cursor-not-allowed"
     >
-      <div className="mb-8 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-        <div>
-          <div className="mb-2 flex items-center gap-3">
-            <div className="h-8 w-1.5 rounded-full bg-blue-600" />
-            <h2 className="text-2xl font-bold text-gray-900">
-              Design configurator
-            </h2>
-          </div>
-          <p className="ml-4 text-sm text-gray-500">
-            Combine winning {isLayerStudy ? "layer assets" : "elements"} and preview the total coefficient.
-          </p>
-          {assistantLoadNotice ? (
-            <div className="ml-4 mt-3 inline-flex max-w-xl items-start gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800 shadow-sm">
-              <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-              <span>{assistantLoadNotice}</span>
+      <div className="mb-6 space-y-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0">
+            <div className="mb-1 flex items-center gap-3">
+              <div className="h-6 w-1 rounded-full bg-blue-600" />
+              <h2 className="text-xl font-semibold tracking-tight text-gray-900">
+                Design configurator
+              </h2>
             </div>
-          ) : null}
-        </div>
-
-        <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-end lg:pt-0.5">
-          {!isInputDesignMode && (
-            <>
-              <div className="flex rounded-xl bg-gray-100 p-1 shadow-inner">
-                {METRIC_OPTIONS.map((metric) => (
-                  <button
-                    key={metric.value}
-                    type="button"
-                    onClick={() => setActiveMetric(metric.value)}
-                    className={`rounded-lg px-4 py-2 text-sm font-medium transition-all ${
-                      activeMetric === metric.value
-                        ? "bg-white text-blue-600 shadow-sm"
-                        : "text-gray-600 hover:text-gray-900"
-                    }`}
-                  >
-                    {metric.label}
-                  </button>
-                ))}
+            <p className="ml-4 text-sm text-gray-500">
+              Combine winning {isLayerStudy ? "layer assets" : "elements"} and preview the total coefficient.
+            </p>
+            {categoryNotice ? (
+              <div className="ml-4 mt-3 inline-flex max-w-xl items-start gap-2 rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-800">
+                <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                <span>{categoryNotice}</span>
               </div>
-
-              <div className="relative min-w-[180px]">
-                <select
-                  value={activeSegment?.id || ""}
-                  onChange={(event) => setActiveSegmentId(event.target.value)}
-                  className="h-10 w-full appearance-none rounded-xl border border-gray-200 bg-white px-4 pr-10 text-sm font-medium text-gray-700 shadow-sm outline-none transition-colors hover:border-blue-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
-                >
-                  {segmentOptions.map((segment) => (
-                    <option key={segment.id} value={segment.id}>
-                      {segment.label}
-                    </option>
-                  ))}
-                </select>
-                <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+            ) : null}
+            {assistantLoadNotice ? (
+              <div className="ml-4 mt-3 inline-flex max-w-xl items-start gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800">
+                <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                <span>{assistantLoadNotice}</span>
               </div>
-            </>
-          )}
+            ) : null}
+          </div>
 
-          <button
-            type="button"
-            onClick={() => {
-              setIsInputDesignMode((current) => !current)
-              setShowInputInsights(false)
-            }}
-            className={`inline-flex h-10 items-center justify-center gap-2 rounded-xl border px-4 text-sm font-bold shadow-sm transition ${
-              isInputDesignMode
-                ? "border-blue-600 bg-blue-600 text-white hover:bg-blue-700"
-                : "border-gray-200 bg-white text-gray-700 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-600"
-            }`}
-          >
-            <Sparkles className="h-4 w-4" />
-            {isInputDesignMode ? "Input Design On" : "Input Design"}
-          </button>
-
-          <button
-            type="button"
-            onClick={() => void handleOpenComparePanel()}
-            className="inline-flex h-10 items-center justify-center gap-2 rounded-xl border border-blue-100 bg-blue-50 px-4 text-sm font-bold text-blue-600 shadow-sm transition hover:border-blue-200 hover:bg-blue-100"
-          >
-            <GitCompare className="h-4 w-4" />
-            Compare Saved
-            {savedDesigns.length > 0 && (
-              <span className="rounded-full bg-white px-2 py-0.5 text-xs text-blue-600">{savedDesigns.length}</span>
-            )}
-          </button>
-
-          {onExportHtml && (
+          <div className="grid w-full grid-cols-2 gap-px overflow-hidden rounded-xl border border-gray-200 bg-gray-200 sm:flex sm:w-auto sm:items-center sm:gap-0 sm:bg-white">
             <button
               type="button"
-              onClick={onExportHtml}
-              disabled={isExportingHtml || !analysisData}
-              className="inline-flex h-10 items-center justify-center gap-2 rounded-xl border border-blue-100 bg-blue-50 px-4 text-sm font-bold text-blue-600 shadow-sm transition hover:border-blue-200 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-60"
+              onClick={() => {
+                setIsInputDesignMode((current) => !current)
+                setShowInputInsights(false)
+              }}
+              title={isInputDesignMode ? "Input design on" : "Input design"}
+              className={`inline-flex h-10 w-full items-center justify-center gap-1.5 bg-white px-2.5 text-xs font-medium transition sm:h-9 sm:w-auto sm:justify-start sm:px-3 sm:text-sm ${
+                isInputDesignMode ? "bg-gray-900 text-white" : "text-gray-600 hover:bg-gray-50 hover:text-gray-900"
+              }`}
             >
-              {isExportingHtml ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  <span>
-                    {exportHtmlStage === "preparing" && "Preparing..."}
-                    {exportHtmlStage === "embedding" && "Embedding images..."}
-                    {exportHtmlStage === "generating" && "Generating HTML..."}
-                    {exportHtmlStage === "done" && "Done"}
-                  </span>
-                </>
-              ) : (
-                <>
-                  <FileCode2 className="h-4 w-4" />
-                  <span>Export HTML</span>
-                </>
+              <Sparkles className="h-3.5 w-3.5 shrink-0" />
+              Input design
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setCategoryError(null)
+                setIsCategoryPanelOpen(true)
+              }}
+              title="Report builder"
+              className="inline-flex h-10 w-full items-center justify-center gap-1.5 bg-white px-2.5 text-xs font-medium text-gray-600 transition hover:bg-gray-50 hover:text-gray-900 sm:h-9 sm:w-auto sm:justify-start sm:border-l sm:border-gray-200 sm:px-3 sm:text-sm"
+            >
+              <Folders className="h-3.5 w-3.5 shrink-0" />
+              Report builder
+              {designCategories.length > 0 && (
+                <span className="text-xs tabular-nums text-gray-400">{designCategories.length}</span>
               )}
             </button>
-          )}
-
-          <button
-            type="button"
-            onClick={() => setIsMobileElementDrawerOpen(true)}
-            className="inline-flex h-11 w-full touch-manipulation items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 text-sm font-bold text-white shadow-sm transition-all duration-150 hover:bg-blue-700 active:scale-[0.98] active:bg-blue-800 lg:hidden"
-          >
-            <ImageIcon className="h-4 w-4" />
-            Select Elements
-          </button>
+            <button
+              type="button"
+              onClick={() => void handleOpenComparePanel()}
+              title="Compare saved designs"
+              className="inline-flex h-10 w-full items-center justify-center gap-1.5 bg-white px-2.5 text-xs font-medium text-gray-600 transition hover:bg-gray-50 hover:text-gray-900 sm:h-9 sm:w-auto sm:justify-start sm:border-l sm:border-gray-200 sm:px-3 sm:text-sm"
+            >
+              <GitCompare className="h-3.5 w-3.5 shrink-0" />
+              Compare
+              {savedDesigns.length > 0 && (
+                <span className="text-xs tabular-nums text-gray-400">{savedDesigns.length}</span>
+              )}
+            </button>
+            {onExportHtml && (
+              <button
+                type="button"
+                onClick={onExportHtml}
+                disabled={isExportingHtml || !analysisData}
+                title="Export HTML"
+                className="inline-flex h-10 w-full items-center justify-center gap-1.5 bg-white px-2.5 text-xs font-medium text-gray-600 transition hover:bg-gray-50 hover:text-gray-900 disabled:cursor-not-allowed disabled:opacity-50 sm:h-9 sm:w-auto sm:justify-start sm:border-l sm:border-gray-200 sm:px-3 sm:text-sm"
+              >
+                {isExportingHtml ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" /> : <FileCode2 className="h-3.5 w-3.5 shrink-0" />}
+                {isExportingHtml ? "Exporting" : "Export"}
+              </button>
+            )}
+          </div>
         </div>
+
+        {!isInputDesignMode && (
+          <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+            <div className="grid w-full grid-cols-3 rounded-lg bg-gray-100 p-0.5 sm:flex sm:w-auto">
+              {METRIC_OPTIONS.map((metric) => (
+                <button
+                  key={metric.value}
+                  type="button"
+                  onClick={() => setActiveMetric(metric.value)}
+                  className={`rounded-md px-1.5 py-1.5 text-center text-xs font-medium transition sm:px-3 sm:text-sm ${
+                    activeMetric === metric.value
+                      ? "bg-white text-gray-900 shadow-sm"
+                      : "text-gray-500 hover:text-gray-800"
+                  }`}
+                >
+                  {metric.label}
+                </button>
+              ))}
+            </div>
+
+            <div className="relative w-full sm:w-auto">
+              <select
+                value={activeSegment?.id || ""}
+                onChange={(event) => setActiveSegmentId(event.target.value)}
+                className="h-9 w-full appearance-none rounded-lg border border-gray-200 bg-white py-1 pl-3 pr-8 text-sm font-medium text-gray-700 outline-none transition hover:border-gray-300 focus:border-gray-400 sm:w-auto"
+              >
+                {segmentOptions.map((segment) => (
+                  <option key={segment.id} value={segment.id}>
+                    {segment.label}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400" />
+            </div>
+          </div>
+        )}
+
+        <button
+          type="button"
+          onClick={() => setIsMobileElementDrawerOpen(true)}
+          className="inline-flex h-11 w-full touch-manipulation items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 text-sm font-bold text-white transition hover:bg-blue-700 active:scale-[0.98] lg:hidden"
+        >
+          <ImageIcon className="h-4 w-4" />
+          Select Elements
+        </button>
       </div>
 
       <div className="flex flex-col gap-8 lg:flex-row lg:items-start">
@@ -2581,78 +3302,95 @@ export function AnalyticsDesignConfigurator({
         <div className="flex flex-col gap-6 lg:sticky lg:top-6 lg:z-10 lg:w-5/12 lg:flex-shrink-0 lg:self-start lg:pr-2 lg:max-h-[calc(100vh-3rem)] lg:min-h-0">
           {/* Preview Card */}
           <div className="flex flex-shrink-0 flex-col overflow-hidden rounded-3xl border border-gray-200 bg-white shadow-sm">
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-100 bg-gray-50/50 px-3 py-3 sm:px-5">
-              {isLayerStudy ? (
-                <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5 sm:gap-2">
+            <div className="flex items-center gap-1 border-b border-gray-100 bg-gray-50/50 px-2.5 py-2 sm:px-3">
+              {isLayerStudy && (
+                <>
                   <button
                     type="button"
                     onClick={() => setShowLayerBackground((current) => !current)}
                     disabled={!backgroundUrl}
-                    className={`inline-flex h-11 min-w-11 touch-manipulation cursor-pointer items-center justify-center gap-1.5 rounded-full px-2.5 text-xs font-semibold transition-all duration-150 active:scale-95 sm:h-auto sm:min-w-0 sm:px-2.5 sm:py-1.5 sm:text-sm sm:active:scale-100 ${
-                      showLayerBackground
-                        ? "bg-blue-50 text-blue-600 hover:bg-blue-100 active:bg-blue-200"
-                        : "text-gray-600 hover:bg-gray-100 hover:text-gray-900 active:bg-gray-200"
-                    } disabled:cursor-not-allowed disabled:opacity-50 disabled:active:scale-100`}
+                    title="Background"
+                    aria-label="Toggle background"
                     aria-pressed={showLayerBackground}
+                    className={`inline-flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-full transition active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 ${
+                      showLayerBackground
+                        ? "bg-blue-50 text-blue-600 hover:bg-blue-100"
+                        : "text-gray-500 hover:bg-gray-100 hover:text-gray-800"
+                    }`}
                   >
-                    <ImageIcon className="h-4 w-4 flex-shrink-0" />
-                    <span className="hidden min-w-0 truncate min-[420px]:inline">Background</span>
+                    <ImageIcon className="h-4 w-4" />
                   </button>
                   <button
                     type="button"
                     onClick={handleDownloadPreview}
                     disabled={isPreviewDownloading || (selectedElements.length === 0 && !showLayerBackground)}
-                    className="inline-flex h-11 min-w-11 touch-manipulation cursor-pointer items-center justify-center gap-1.5 rounded-full bg-blue-50 px-2.5 text-xs font-semibold text-blue-600 transition-all duration-150 hover:bg-blue-100 hover:text-blue-700 active:scale-95 active:bg-blue-200 disabled:cursor-not-allowed disabled:opacity-50 disabled:active:scale-100 sm:h-auto sm:min-w-0 sm:px-2.5 sm:py-1.5 sm:text-sm sm:active:scale-100"
+                    title={isPreviewDownloading ? "Downloading" : "Download"}
+                    aria-label={isPreviewDownloading ? "Downloading preview" : "Download preview"}
+                    className="inline-flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-full text-blue-600 transition hover:bg-blue-50 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
                   >
-                    <Download className="h-4 w-4 flex-shrink-0" />
-                    <span className="hidden min-w-0 truncate min-[420px]:inline">{isPreviewDownloading ? "Downloading..." : "Download"}</span>
+                    {isPreviewDownloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
                   </button>
-                </div>
-              ) : (
-                <div className="min-w-0 flex-1" />
+                  <span className="mx-0.5 h-5 w-px shrink-0 bg-gray-200" aria-hidden="true" />
+                </>
               )}
-              <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-1 sm:gap-2">
-                {!isLayerStudy && hasPreviewContent && (
-                  <div className="mr-1 flex items-center gap-1 rounded-full bg-gray-100 p-1 shadow-inner">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSaveError(null)
-                        setIsSaveModalOpen(true)
-                      }}
-                      disabled={isSavingDesign}
-                      className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-full bg-blue-600 text-white shadow-sm transition hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500/50 disabled:cursor-not-allowed disabled:opacity-60"
-                      aria-label="Save current design"
-                    >
-                      {isSavingDesign ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setIsPreviewFullscreenOpen(true)}
-                      className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-full bg-white text-gray-700 shadow-sm transition hover:bg-gray-50 hover:text-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
-                      aria-label="Open full screen preview"
-                    >
-                      <Eye className="h-4 w-4" />
-                    </button>
-                  </div>
-                )}
+              <div className="ml-auto flex items-center gap-0.5">
                 {!isInputDesignMode && (
                   <button
                     type="button"
                     onClick={handleBestMix}
-                    className="inline-flex h-11 min-w-[96px] touch-manipulation cursor-pointer items-center justify-center gap-1.5 rounded-full bg-blue-50/80 px-3 text-xs font-semibold text-blue-600 transition-all duration-150 hover:bg-blue-100 hover:text-blue-700 active:scale-95 active:bg-blue-200 sm:h-auto sm:min-w-0 sm:bg-transparent sm:px-3 sm:py-1.5 sm:text-sm sm:hover:bg-blue-50 sm:active:scale-100 sm:active:bg-blue-100"
+                    title="Best Mix"
+                    className="inline-flex h-9 shrink-0 cursor-pointer items-center gap-1.5 rounded-full px-2.5 text-xs font-semibold text-blue-600 transition hover:bg-blue-50 active:scale-95"
                   >
-                    <Sparkles className="h-4 w-4 flex-shrink-0" />
-                    <span className="min-w-0 truncate">Best Mix</span>
+                    <Sparkles className="h-4 w-4" />
+                    <span>Best Mix</span>
+                  </button>
+                )}
+                {canSaveDesigns && (
+                  <button
+                    type="button"
+                    onClick={openAddCurrentCategory}
+                    disabled={!hasPreviewContent || isAssigningCategory}
+                    title="Add to report builder"
+                    aria-label="Add to report builder"
+                    className="inline-flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-full text-blue-600 transition hover:bg-blue-50 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    <FolderPlus className="h-4 w-4" />
+                  </button>
+                )}
+                {canSaveDesigns && hasPreviewContent && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSaveError(null)
+                      setIsSaveModalOpen(true)
+                    }}
+                    disabled={isSavingDesign}
+                    title="Save design"
+                    aria-label="Save current design"
+                    className="inline-flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-full bg-blue-600 text-white transition hover:bg-blue-700 active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {isSavingDesign ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                  </button>
+                )}
+                {hasPreviewContent && (
+                  <button
+                    type="button"
+                    onClick={() => setIsPreviewFullscreenOpen(true)}
+                    title="Full screen"
+                    aria-label="Open full screen preview"
+                    className="inline-flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-full text-gray-600 transition hover:bg-gray-100 hover:text-gray-900 active:scale-95"
+                  >
+                    <Eye className="h-4 w-4" />
                   </button>
                 )}
                 <button
                   type="button"
                   onClick={() => setSelectedByCategory({})}
-                  className="inline-flex h-11 min-w-11 touch-manipulation cursor-pointer items-center justify-center gap-1 rounded-full px-2.5 text-xs font-semibold text-gray-500 transition-all duration-150 hover:bg-gray-100 hover:text-gray-800 active:scale-95 active:bg-gray-200 sm:h-auto sm:min-w-0 sm:gap-1.5 sm:px-3 sm:py-1.5 sm:text-sm sm:active:scale-100"
+                  title="Clear"
+                  aria-label="Clear selection"
+                  className="inline-flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-full text-gray-500 transition hover:bg-gray-100 hover:text-gray-800 active:scale-95"
                 >
-                  <RotateCcw className="h-4 w-4 flex-shrink-0" />
-                  <span className="hidden min-w-0 truncate min-[420px]:inline">Clear</span>
+                  <RotateCcw className="h-4 w-4" />
                 </button>
               </div>
             </div>
@@ -2670,30 +3408,6 @@ export function AnalyticsDesignConfigurator({
                     aspectRatio={layerAspectRatio}
                   />
                 </div>
-                {isLayerStudy && hasPreviewContent && (
-                  <div className="absolute right-2 top-2 z-10 flex items-center gap-2 sm:right-3 sm:top-3">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSaveError(null)
-                        setIsSaveModalOpen(true)
-                      }}
-                      disabled={isSavingDesign}
-                      className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-full bg-blue-600 text-white shadow-md backdrop-blur-sm transition hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500/50 disabled:cursor-not-allowed disabled:opacity-60"
-                      aria-label="Save current design"
-                    >
-                      {isSavingDesign ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setIsPreviewFullscreenOpen(true)}
-                      className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-full bg-black/55 text-white shadow-md backdrop-blur-sm transition hover:bg-black/75 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
-                      aria-label="Open full screen preview"
-                    >
-                      <Eye className="h-4 w-4" />
-                    </button>
-                  </div>
-                )}
               </div>
             </div>
 
@@ -2739,6 +3453,26 @@ export function AnalyticsDesignConfigurator({
               )}
             </div>
           </div>
+
+          {!isInputDesignMode && (
+            <TopMixesCollection
+              isOpen={isTopMixesOpen}
+              onToggle={() => setIsTopMixesOpen((current) => !current)}
+              mixes={rankedMixes.map((mix) => ({
+                rank: mix.rank,
+                scoreLabel: formatValue(mix.score, activeMetric),
+                summary: mix.labels.join(" · "),
+                active: mixSignature(mix.selection) === currentSelectionSignature,
+                onSelect: () => applyConfiguratorSelection(mix.selection),
+                onAdd: canSaveDesigns
+                  ? () => {
+                      applyConfiguratorSelection(mix.selection)
+                      openAddCurrentCategory()
+                    }
+                  : undefined,
+              }))}
+            />
+          )}
 
           {isInputDesignMode && showInputInsights && selectedElements.length > 0 && (
             <div className="rounded-3xl border border-blue-100 bg-white shadow-sm">
@@ -3175,6 +3909,7 @@ export function AnalyticsDesignConfigurator({
         </BodyPortal>
       )}
 
+      {canSaveDesigns ? (
       <SaveDesignModal
         isOpen={isSaveModalOpen}
         defaultName={defaultSavedDesignName}
@@ -3183,6 +3918,7 @@ export function AnalyticsDesignConfigurator({
         onClose={() => setIsSaveModalOpen(false)}
         onSave={(name) => void handleSaveDesign(name)}
       />
+      ) : null}
 
       <SavedDesignComparePanel
         isOpen={isComparePanelOpen}
@@ -3195,6 +3931,59 @@ export function AnalyticsDesignConfigurator({
         onToggle={handleToggleCompareDesign}
         onCompare={() => void handleCompareDesigns()}
         onDelete={(designId) => void handleDeleteSavedDesign(designId)}
+        canDelete={canSaveDesigns}
+      />
+
+      <AddToCategoryDialog
+        isOpen={isAddCategoryOpen}
+        title="Add to report builder"
+        description={
+          designCategories.length === 0
+            ? "Create a category for this study, then this combination is saved into it."
+            : "Choose a category for this study, or create a new one."
+        }
+        designName={categoryDesignName}
+        onDesignNameChange={setCategoryDesignName}
+        namePrefix={isInputDesignMode ? null : reportCombinationPrefix(activeMetric)}
+        showDesignName={addCategoryMode === "current" && !categorySavedDesign}
+        savedDesignLabel={addCategoryMode === "current" ? categorySavedDesign?.name ?? null : null}
+        categories={designCategories}
+        disabledCategoryIds={disabledCategoryIds}
+        isSaving={isAssigningCategory}
+        error={categoryError}
+        onClose={() => {
+          if (isAssigningCategory) return
+          setIsAddCategoryOpen(false)
+          setCategoryError(null)
+        }}
+        onSubmit={(input) => void handleAssignCategory(input)}
+      />
+
+      <DesignCategoryDrawer
+        isOpen={isCategoryPanelOpen}
+        categories={designCategories}
+        isLoading={isLoadingCategories}
+        error={isAddCategoryOpen ? null : categoryError}
+        canEdit={canSaveDesigns}
+        activeDesignId={previewDesignId}
+        focusCategoryId={focusCategoryId}
+        onClose={() => {
+          if (downloadingCategoryId) return
+          setIsCategoryPanelOpen(false)
+          setCategoryPptError(null)
+        }}
+        onOpenItem={(savedDesignId) => void handleOpenCategoryItem(savedDesignId)}
+        onDownloadCategory={(categoryId) => void handleDownloadCategory(categoryId)}
+        downloadingCategoryId={downloadingCategoryId}
+        downloadMessage={CATEGORY_PPT_MESSAGES[categoryPptMessageIndex % CATEGORY_PPT_MESSAGES.length]}
+        downloadError={categoryPptError}
+        onDismissDownloadError={() => setCategoryPptError(null)}
+        downloadsEnabled={!isLocalPersistence}
+        downloadHint={isLocalPersistence ? "Download is available once this category is saved on the study." : null}
+        onRename={handleRenameCategory}
+        onRenameItem={handleRenameSavedDesign}
+        onDeleteCategory={(categoryId) => void handleDeleteCategory(categoryId)}
+        onRemoveItem={(categoryId, savedDesignId) => void handleRemoveCategoryItem(categoryId, savedDesignId)}
       />
 
       <SavedDesignCompareOverlay

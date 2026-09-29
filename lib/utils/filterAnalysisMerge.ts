@@ -187,6 +187,32 @@ export function isEmptyFilterResponse(response: StudyFilterResponse | null | any
 	)
 }
 
+export function listAppliedFilterChips(filters?: StudyFilterPayload["filters"] | null): string[] {
+	if (!filters) return []
+	const chips: string[] = []
+	for (const gender of filters.genders ?? []) {
+		const label = String(gender).trim()
+		if (label) chips.push(label)
+	}
+	for (const age of filters.age_groups ?? []) {
+		const label = String(age).trim()
+		if (label) chips.push(label)
+	}
+	if (filters.classification_filters) {
+		for (const answers of Object.values(filters.classification_filters)) {
+			for (const answer of answers ?? []) {
+				const label = String(answer).trim()
+				if (label) chips.push(label)
+			}
+		}
+	}
+	return chips
+}
+
+export function countAppliedFilters(filters?: StudyFilterPayload["filters"] | null): number {
+	return listAppliedFilterChips(filters).length
+}
+
 export function describeAppliedFilters(filters?: StudyFilterPayload["filters"] | null): string {
 	if (!filters) return ""
 	const parts: string[] = []

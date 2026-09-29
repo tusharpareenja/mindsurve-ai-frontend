@@ -7,7 +7,10 @@ export type LocalSavedDesignsStore = {
   configurator: SavedDesignPayload[]
   input: SavedDesignPayload[]
   deleted_ids?: string[]
-  [key: string]: SavedDesignPayload[] | string[] | undefined
+}
+
+function designsForType(store: LocalSavedDesignsStore, designType: SavedDesignType): SavedDesignPayload[] {
+  return designType === "input" ? store.input : store.configurator
 }
 
 function storableImageUrl(value: unknown): string | null {
@@ -138,9 +141,7 @@ export function listLocalSavedDesigns(
   initial: LocalSavedDesignsStore
 ): SavedDesignPayload[] {
   const store = seedLocalSavedDesigns(studyId, initial)
-  const key = String(designType)
-  const value = store[key]
-  return Array.isArray(value) ? (value as SavedDesignPayload[]) : []
+  return designsForType(store, designType)
 }
 
 export function createLocalSavedDesign(
@@ -149,8 +150,8 @@ export function createLocalSavedDesign(
   initial: LocalSavedDesignsStore
 ): SavedDesignPayload {
   const store = seedLocalSavedDesigns(studyId, initial)
-  const type = String(design.design_type || "configurator")
-  const list = (Array.isArray(store[type]) ? store[type] : []) as SavedDesignPayload[]
+  const type: SavedDesignType = design.design_type === "input" ? "input" : "configurator"
+  const list = designsForType(store, type)
   const normalized = design.name.trim().toLowerCase()
   if (list.some((item) => item.name.trim().toLowerCase() === normalized)) {
     throw new Error("A saved design with this name already exists.")
@@ -161,6 +162,32 @@ export function createLocalSavedDesign(
   }
   writeLocalSavedDesigns(studyId, next)
   return design
+}
+
+export function renameLocalSavedDesign(
+  studyId: string,
+  designId: string,
+  name: string,
+  initial: LocalSavedDesignsStore
+): SavedDesignPayload {
+  const trimmed = name.trim()
+  if (!trimmed) throw new Error("Design name is required")
+  const store = seedLocalSavedDesigns(studyId, initial)
+  const types: Array<"configurator" | "input"> = ["configurator", "input"]
+  const foundType = types.find((type) => designsForType(store, type).some((design) => design.id === designId))
+  if (!foundType) throw new Error("Saved design not found.")
+  const list = designsForType(store, foundType)
+  const normalized = trimmed.toLowerCase()
+  if (list.some((design) => design.id !== designId && design.name.trim().toLowerCase() === normalized)) {
+    throw new Error("A saved design with this name already exists.")
+  }
+  const updated = list.map((design) => (
+    design.id === designId ? { ...design, name: trimmed, updated_at: new Date().toISOString() } : design
+  ))
+  const renamed = updated.find((design) => design.id === designId)
+  if (!renamed) throw new Error("Saved design not found.")
+  writeLocalSavedDesigns(studyId, { ...store, [foundType]: updated })
+  return renamed
 }
 
 export function deleteLocalSavedDesign(

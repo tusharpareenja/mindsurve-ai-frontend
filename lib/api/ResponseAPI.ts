@@ -1302,3 +1302,74 @@ export async function downloadStudyResponsesCsv(
 	}
 	return await res.blob()
 }
+
+const PPTX_MEDIA_TYPE =
+	'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+
+function parseFilenameFromDisposition(disposition: string, fallback: string): string {
+	if (!disposition) return fallback
+	const utf8 = /filename\*\s*=\s*UTF-8''([^;]+)/i.exec(disposition)
+	if (utf8?.[1]) {
+		try {
+			return decodeURIComponent(utf8[1].trim())
+		} catch {
+			/* fall through */
+		}
+	}
+	const plain = /filename\s*=\s*"?([^";]+)"?/i.exec(disposition)
+	return plain?.[1]?.trim() || fallback
+}
+
+/**
+ * Download the Design Element Appeal PowerPoint (.pptx) for a study.
+ * When filters are active the deck is built on the filtered cohort.
+ * Surfaces the backend's readable message (e.g. 422 "not ready") on failure.
+ */
+export async function downloadStudyAppealPpt(
+	studyId: string,
+	filters?: StudyFilterPayload['filters'] | null,
+	analysis?: unknown,
+): Promise<{ blob: Blob; filename: string }> {
+	const cleanId = studyId?.trim?.()
+	if (!cleanId) throw new Error('Study ID is required')
+
+	const hasFilters =
+		!!filters &&
+		((filters.age_groups?.length ?? 0) > 0 ||
+			(filters.genders?.length ?? 0) > 0 ||
+			Object.values(filters.classification_filters ?? {}).some((answers) => (answers?.length ?? 0) > 0))
+
+	const res = await fetchWithAuth(
+		`${API_BASE_URL}/responses/study/${encodeURIComponent(cleanId)}/export-appeal-ppt`,
+		{
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', Accept: PPTX_MEDIA_TYPE },
+			body: JSON.stringify({
+				filters: hasFilters ? filters : null,
+				analysis: analysis ?? null,
+			}),
+		},
+	)
+
+	if (!res.ok) {
+		let message = `Failed to generate PowerPoint (${res.status})`
+		try {
+			const data = await res.json()
+			if (data?.detail) message = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail)
+		} catch {
+			const text = await res.text().catch(() => '')
+			if (text) message = text
+		}
+		throw Object.assign(new Error(message), { status: res.status })
+	}
+
+	const blob = await res.blob()
+	if (!blob || blob.size === 0) {
+		throw new Error('The generated PowerPoint was empty. Please try again.')
+	}
+	const filename = parseFilenameFromDisposition(
+		res.headers.get('Content-Disposition') || '',
+		'Appeal Report.pptx',
+	)
+	return { blob, filename }
+}

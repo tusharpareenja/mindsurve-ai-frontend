@@ -22,6 +22,7 @@ import {
   X,
 } from "lucide-react"
 import { AssistantAnswerCard } from "./assistant/AssistantAnswerCard"
+import { AssistantMarkdownText } from "./assistant/AssistantMarkdownText"
 import type {
   AssistantAction,
   AssistantChatMessage,
@@ -564,7 +565,12 @@ export function AnalyticsAssistantPanel({
                         : "border border-gray-100 bg-gray-50 text-gray-900"
                     }`}
                   >
-                    <p className="whitespace-pre-wrap break-words leading-relaxed">{message.text}</p>
+                    {message.role === "user" && message.text ? (
+                      <p className="whitespace-pre-wrap break-words leading-relaxed">{message.text}</p>
+                    ) : null}
+                    {message.role === "assistant" && message.text ? (
+                      <AssistantMarkdownText text={message.text} />
+                    ) : null}
 
                     {message.status === "sending" && message.role === "user" ? (
                       <div className="mt-1 text-[10px] text-white/70">Sending…</div>
